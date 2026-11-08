@@ -105,6 +105,15 @@ end
 -- end
 local Migrations = {}
 
+-- v1 -> v2: раньше Stats.Mana хранил максимум маны (старт 100),
+-- теперь это очки характеристики (старт 10, максимум маны = Mana * ManaPerPoint).
+-- Вычитаем прежние 90 "лишних" стартовых единиц; вложенные игроком очки сохраняются.
+Migrations[1] = function(data)
+    if type(data.Stats) == "table" and type(data.Stats.Mana) == "number" then
+        data.Stats.Mana = math.max(10, data.Stats.Mana - 90)
+    end
+end
+
 local function Migrate(data)
     local version = data.Version or 1
 

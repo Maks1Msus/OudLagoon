@@ -1,4 +1,9 @@
 local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local ProgressionConfig = require(
+    ReplicatedStorage.Shared.Config.ProgressionConfig
+)
 
 local DataService = require(script.Parent.DataService)
 local CharacterService = require(script.Parent.CharacterService)
@@ -15,10 +20,21 @@ local KICK_MESSAGES = {
 }
 
 -- Клиенту отправляем только то, что ему нужно для интерфейса.
+-- Единственное место, где собирается профиль для клиента:
+-- ProgressionService и DebugService тоже отправляют его через PushProfile.
 local function BuildPublicProfile(profile)
+    local nextLevelExperience = 0
+
+    if profile.Level < ProgressionConfig.MaxLevel then
+        nextLevelExperience =
+            ProgressionConfig:GetExperienceForNextLevel(profile.Level)
+    end
+
     return {
         Level = profile.Level,
         Experience = profile.Experience,
+        NextLevelExperience = nextLevelExperience, -- 0 на максимальном уровне
+        StatPoints = profile.StatPoints,
         Stats = profile.Stats,
         Resources = profile.Resources,
     }

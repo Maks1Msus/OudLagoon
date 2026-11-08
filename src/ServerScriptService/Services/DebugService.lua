@@ -1,23 +1,14 @@
 local RunService = game:GetService("RunService")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-
-local GameConstants = require(
-    ReplicatedStorage.Shared.Constants.GameConstants
-)
 
 local DataService = require(script.Parent.DataService)
 local RemoteService = require(script.Parent.RemoteService)
 local PlayerService = require(script.Parent.PlayerService)
 local CharacterService = require(script.Parent.CharacterService)
+local ProgressionService = require(script.Parent.ProgressionService)
 
 local DebugService = {}
 
 local Check = RemoteService.Check
-
--- ВРЕМЕННАЯ формула опыта. Позже переедет в ProgressionService.
-local function XpToNextLevel(level)
-    return 100 * level
-end
 
 local function GetHumanoid(player)
     local character = player.Character
@@ -29,18 +20,10 @@ end
 -- Клиент присылает только название действия и число.
 local Actions = {}
 
-function Actions.AddXP(player, profile, amount)
-    profile.Experience += math.floor(amount or 50)
-
-    while profile.Level < GameConstants.MaxLevel
-        and profile.Experience >= XpToNextLevel(profile.Level)
-    do
-        profile.Experience -= XpToNextLevel(profile.Level)
-        profile.Level += 1
-    end
-
-    CharacterService:RefreshAttributes(player, profile)
-    PlayerService:PushProfile(player)
+-- Опыт начисляется через ProgressionService, поэтому работает
+-- настоящая кривая уровней и выдаются очки характеристик.
+function Actions.AddXP(player, _profile, amount)
+    ProgressionService:AddExperience(player, math.floor(amount or 50))
 end
 
 function Actions.AddGold(player, profile, amount)

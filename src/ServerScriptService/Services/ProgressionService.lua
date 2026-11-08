@@ -1,5 +1,4 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local Players = game:GetService("Players")
 
 local ProgressionConfig = require(
     ReplicatedStorage.Shared.Config.ProgressionConfig
@@ -7,25 +6,28 @@ local ProgressionConfig = require(
 
 local DataService = require(script.Parent.DataService)
 local CharacterService = require(script.Parent.CharacterService)
+local PlayerService = require(script.Parent.PlayerService)
 local RemoteService = require(script.Parent.RemoteService)
 
 local ProgressionService = {}
+
+local MAX_EXPERIENCE_PER_CALL = 1000000
+local MAX_POINTS_PER_REQUEST = 100
 
 local function GetRequiredExperience(level)
     return ProgressionConfig:GetExperienceForNextLevel(level)
 end
 
-local function SendProfileUpdate(player, profile)
-    RemoteService:GetEvent("ProfileUpdated"):FireClient(player, {
-        Level = profile.Level,
-        Experience = profile.Experience,
-        StatPoints = profile.StatPoints,
-        Stats = profile.Stats,
-        Resources = profile.Resources,
-    })
+local function IsWholePositiveNumber(value)
+    return type(value) == "number"
+        and value == value
+        and value ~= math.huge
+        and value > 0
+        and value % 1 == 0
 end
 
 -- Начисление опыта. Вызывать только с сервера.
+-- Возвращает: успех, повысился ли уровень.
 function ProgressionService:AddExperience(player, amount)
     local profile = DataService:GetProfile(player)
 
@@ -33,15 +35,11 @@ function ProgressionService:AddExperience(player, amount)
         return false
     end
 
-    if type(amount) ~= "number"
-        or amount ~= amount
-        or amount <= 0
-        or amount == math.huge
-        or amount % 1 ~= 0 then
+    if not IsWholePositiveNumber(amount) then
         return false
     end
 
-    amount = math.min(amount, 1000000)
+    amount = math.min(amount, MAX_EXPERIENCE_PER_CALL)
 
     if profile.Level >= ProgressionConfig.MaxLevel then
         return false
@@ -78,11 +76,10 @@ function ProgressionService:AddExperience(player, amount)
         profile.Experience = 0
     end
 
-    player:SetAttribute("Level", profile.Level)
-    player:SetAttribute("Experience", profile.Experience)
-    player:SetAttribute("StatPoints", profile.StatPoints)
+    -- Обновляет Level, Experience, StatPoints и т.д. Здоровье и ману не трогает.
+    CharacterService:RefreshAttributes(player, profile)
 
-    SendProfileUpdate(player, profile)
+    PlayerService:PushProfile(player)
 
     return true, leveledUp
 end
@@ -104,12 +101,8 @@ function ProgressionService:AllocateStatPoints(
         return false
     end
 
-    if type(amount) ~= "number"
-        or amount ~= amount
-        or amount == math.huge
-        or amount % 1 ~= 0
-        or amount <= 0
-        or amount > 100 then
+    if not IsWholePositiveNumber(amount)
+        or amount > MAX_POINTS_PER_REQUEST then
         return false
     end
 
@@ -130,18 +123,19 @@ function ProgressionService:AllocateStatPoints(
     profile.Stats[statName] += amount
     profile.StatPoints -= amount
 
-    player:SetAttribute("StatPoints", profile.StatPoints)
+    -- Пересчитываем здоровье, скорость и ману БЕЗ полного восстановления:
+    -- иначе вложение очка работало бы как лечение.
+    local character = player.Character
+    local humanoid = character
+        and character:FindFirstChildOfClass("Humanoid")
 
-    -- Обновляем характеристики персонажа.
-    if player.Character then
-        CharacterService:ApplyStats(
-            player,
-            player.Character,
-            profile
-        )
+    if humanoid then
+        CharacterService:UpdateDerivedStats(player, humanoid, profile)
+    else
+        CharacterService:RefreshAttributes(player, profile)
     end
 
-    SendProfileUpdate(player, profile)
+    PlayerService:PushProfile(player)
 
     print(
         "[ProgressionService] Allocated:",
@@ -154,24 +148,19 @@ function ProgressionService:AllocateStatPoints(
 end
 
 function ProgressionService:Init()
-    local allocationEvent = RemoteService:GetEvent(
-        "StatAllocationRequest"
-    )
-
-    allocationEvent.OnServerEvent:Connect(function(
-        player,
-        statName,
-        amount
-    )
-        self:AllocateStatPoints(
-            player,
-            statName,
-            amount
-        )
-    end)
-
-    Players.PlayerAdded:Connect(function(player)
-        player:SetAttribute("StatPoints", 0)
+    -- Через RemoteService: лимит частоты и проверка аргументов.
+    RemoteService:OnEvent("StatAllocationRequest", {
+        RateLimit = 10,
+        Validate = function(statName, amount)
+            return RemoteService.Check.String(statName, 16)
+                and RemoteService.Check.Number(
+                    amount,
+                    1,
+                    MAX_POINTS_PER_REQUEST
+                )
+        end,
+    }, function(player, statName, amount)
+        self:AllocateStatPoints(player, statName, amount)
     end)
 
     print("[ProgressionService] Initialized")

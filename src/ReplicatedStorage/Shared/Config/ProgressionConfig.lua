@@ -1,3 +1,5 @@
+-- Единый источник правил прокачки.
+-- XP до следующего уровня = floor(BaseExperience * Level ^ ExperienceExponent)
 
 local ProgressionConfig = {}
 
@@ -22,6 +24,16 @@ ProgressionConfig.AllocatableStats = {
     Intelligence = true,
     Mana = true,
     Spirit = true,
+}
+
+-- Порядок характеристик для интерфейса.
+ProgressionConfig.StatOrder = {
+    "Strength",
+    "Vitality",
+    "Agility",
+    "Intelligence",
+    "Mana",
+    "Spirit",
 }
 
 function ProgressionConfig:GetExperienceForNextLevel(level)

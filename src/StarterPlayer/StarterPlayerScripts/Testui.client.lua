@@ -8,12 +8,18 @@ local RunService = game:GetService("RunService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
+local ProgressionConfig = require(
+    ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config"):WaitForChild("ProgressionConfig")
+)
+
 local Remotes = ReplicatedStorage:WaitForChild("Remotes")
-local ProfileUpdated = Remotes:WaitForChild("Events"):WaitForChild("ProfileUpdated")
-local DebugRequest = Remotes.Events:WaitForChild("DebugRequest")
+local Events = Remotes:WaitForChild("Events")
+local ProfileUpdated = Events:WaitForChild("ProfileUpdated")
+local DebugRequest = Events:WaitForChild("DebugRequest")
+local StatAllocationRequest = Events:WaitForChild("StatAllocationRequest")
 local RequestProfile = Remotes:WaitForChild("Functions"):WaitForChild("RequestProfile")
 
-local STAT_ORDER = { "Strength", "Vitality", "Agility", "Intelligence", "Mana", "Spirit" }
+local STAT_ORDER = ProgressionConfig.StatOrder
 
 local WHITE = Color3.fromRGB(235, 235, 240)
 
@@ -127,8 +133,64 @@ local levelLabel = makeLabel(2, "Level -", 14)
 local updateHealth = makeBar(3, Color3.fromRGB(200, 60, 60), "HP")
 local updateMana = makeBar(4, Color3.fromRGB(60, 110, 210), "Mana")
 local goldLabel = makeLabel(5, "Gold: -", 14)
-local statsLabel = makeLabel(6, "Stats: loading...", 13)
-local statusLabel = makeLabel(7, "Loading profile...", 12)
+local statPointsLabel = makeLabel(6, "Stat points: -", 14)
+
+-- Строки характеристик: название, значение и кнопка "+" (видна, если есть очки).
+local statsHolder = create("Frame", {
+    Name = "Stats",
+    Size = UDim2.new(1, 0, 0, 0),
+    AutomaticSize = Enum.AutomaticSize.Y,
+    BackgroundTransparency = 1,
+    LayoutOrder = 7,
+}, panel)
+
+create("UIListLayout", {
+    Padding = UDim.new(0, 4),
+    SortOrder = Enum.SortOrder.LayoutOrder,
+}, statsHolder)
+
+local statRows = {} -- [statName] = { Label, Button }
+
+for index, statName in ipairs(STAT_ORDER) do
+    local row = create("Frame", {
+        Size = UDim2.new(1, 0, 0, 24),
+        BackgroundTransparency = 1,
+        LayoutOrder = index,
+    }, statsHolder)
+
+    local label = create("TextLabel", {
+        Size = UDim2.new(1, -30, 1, 0),
+        BackgroundTransparency = 1,
+        Font = Enum.Font.GothamMedium,
+        Text = statName .. ": -",
+        TextColor3 = WHITE,
+        TextSize = 13,
+        TextXAlignment = Enum.TextXAlignment.Left,
+    }, row)
+
+    local button = create("TextButton", {
+        Size = UDim2.fromOffset(24, 24),
+        Position = UDim2.new(1, -24, 0, 0),
+        BackgroundColor3 = Color3.fromRGB(70, 130, 90),
+        BorderSizePixel = 0,
+        Font = Enum.Font.GothamBold,
+        Text = "+",
+        TextColor3 = WHITE,
+        TextSize = 16,
+        Visible = false,
+    }, row)
+
+    create("UICorner", { CornerRadius = UDim.new(0, 4) }, button)
+
+    -- Сервер сам проверяет лимит частоты, имя характеристики и количество очков.
+    button.Activated:Connect(function()
+        StatAllocationRequest:FireServer(statName, 1)
+    end)
+
+    statRows[statName] = { Label = label, Button = button }
+end
+
+local statusLabel = makeLabel(8, "Loading profile...", 12)
 
 -- Кнопки отладки: показываются только в Studio.
 -- Реальная защита на сервере: DebugService не подписывается на события вне Studio.
@@ -137,7 +199,7 @@ if RunService:IsStudio() then
         Size = UDim2.new(1, 0, 0, 0),
         AutomaticSize = Enum.AutomaticSize.Y,
         BackgroundTransparency = 1,
-        LayoutOrder = 8,
+        LayoutOrder = 9,
     }, panel)
 
     create("UIGridLayout", {
@@ -148,6 +210,7 @@ if RunService:IsStudio() then
 
     local buttons = {
         { "+50 XP", "AddXP", 50 },
+        { "+500 XP", "AddXP", 500 },
         { "+100 Gold", "AddGold", 100 },
         { "-20 HP", "DamageSelf", 20 },
         { "-30 Mana", "SpendMana", 30 },
@@ -177,16 +240,30 @@ end
 -- ОТОБРАЖЕНИЕ ДАННЫХ ----------------------------------------------------
 
 local function renderProfile(data)
-    levelLabel.Text = string.format("Level %d   XP %d", data.Level, data.Experience)
-    goldLabel.Text = "Gold: " .. tostring(data.Resources.Gold or 0)
-
-    local lines = {}
-
-    for _, name in ipairs(STAT_ORDER) do
-        table.insert(lines, string.format("%s: %s", name, tostring(data.Stats[name] or "-")))
+    if data.NextLevelExperience and data.NextLevelExperience > 0 then
+        levelLabel.Text = string.format(
+            "Level %d   XP %d / %d",
+            data.Level,
+            data.Experience,
+            data.NextLevelExperience
+        )
+    else
+        levelLabel.Text = string.format("Level %d   (MAX)", data.Level)
     end
 
-    statsLabel.Text = table.concat(lines, "\n")
+    goldLabel.Text = "Gold: " .. tostring(data.Resources.Gold or 0)
+
+    local points = data.StatPoints or 0
+
+    statPointsLabel.Text = "Stat points: " .. tostring(points)
+
+    for _, statName in ipairs(STAT_ORDER) do
+        local row = statRows[statName]
+        local value = data.Stats[statName]
+
+        row.Label.Text = string.format("%s: %s", statName, tostring(value or "-"))
+        row.Button.Visible = points > 0
+    end
 end
 
 local function refreshMana()

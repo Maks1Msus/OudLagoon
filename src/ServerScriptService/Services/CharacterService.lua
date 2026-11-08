@@ -6,12 +6,43 @@ local GameConstants = require(
 
 local CharacterService = {}
 
+-- Максимум маны считается из очков характеристики Mana.
+local function CalculateMaxMana(stats)
+    local manaStat = stats.Mana or GameConstants.BaseStatValue
+
+    return math.max(1, manaStat * GameConstants.ManaPerPoint)
+end
+
+local function CalculateMaxHealth(stats)
+    local vitality = stats.Vitality or GameConstants.BaseStatValue
+
+    return math.max(
+        1,
+        GameConstants.DefaultHealth
+            + (vitality - GameConstants.BaseStatValue)
+                * GameConstants.HealthPerVitality
+    )
+end
+
+local function CalculateWalkSpeed(stats)
+    local agility = stats.Agility or GameConstants.BaseStatValue
+
+    return math.clamp(
+        GameConstants.DefaultWalkSpeed
+            + (agility - GameConstants.BaseStatValue)
+                * GameConstants.SpeedPerAgility,
+        GameConstants.MinWalkSpeed,
+        GameConstants.MaxWalkSpeed
+    )
+end
+
 -- Атрибуты на Player: сервер -> клиент, только для отображения.
 -- Источник истины - профиль в DataService. Изменения атрибутов на клиенте
 -- на сервер не передаются, но читать их для логики на сервере всё равно не стоит.
 --
--- В профиле Stats.Mana - это МАКСИМУМ маны. Чтобы не путать его с текущей маной,
--- в атрибутах он называется MaxMana, а Mana - это текущее значение.
+-- В профиле Stats.Mana - это ОЧКИ характеристики. Максимум маны в атрибуте MaxMana,
+-- а атрибут Mana - это текущее значение.
+-- Не лечит и не восстанавливает ману (кроме ограничения текущей маны сверху).
 function CharacterService:RefreshAttributes(player, profile)
     local stats = profile.Stats
 
@@ -21,7 +52,7 @@ function CharacterService:RefreshAttributes(player, profile)
         end
     end
 
-    local maxMana = stats.Mana or GameConstants.MaxMana
+    local maxMana = CalculateMaxMana(stats)
 
     player:SetAttribute("MaxMana", maxMana)
 
@@ -33,9 +64,23 @@ function CharacterService:RefreshAttributes(player, profile)
 
     player:SetAttribute("Level", profile.Level)
     player:SetAttribute("Experience", profile.Experience)
+    player:SetAttribute("StatPoints", profile.StatPoints)
+end
+
+-- Пересчитывает здоровье, скорость и атрибуты по текущим характеристикам.
+-- НЕ восстанавливает здоровье и ману, поэтому безопасно вызывать посреди боя
+-- (например, при вложении очка характеристики).
+function CharacterService:UpdateDerivedStats(player, humanoid, profile)
+    local stats = profile.Stats
+
+    humanoid.MaxHealth = CalculateMaxHealth(stats)
+    humanoid.WalkSpeed = CalculateWalkSpeed(stats)
+
+    self:RefreshAttributes(player, profile)
 end
 
 -- Вызывается при каждом появлении персонажа (в том числе после смерти).
+-- Здесь здоровье и мана восстанавливаются полностью.
 function CharacterService:ApplyStats(player, character, profile)
     local humanoid = character:WaitForChild("Humanoid", 10)
 
@@ -49,32 +94,9 @@ function CharacterService:ApplyStats(player, character, profile)
         return
     end
 
-    local stats = profile.Stats
+    self:UpdateDerivedStats(player, humanoid, profile)
 
-    -- Здоровье
-    local vitality = stats.Vitality or 10
-
-    local maxHealth = math.max(
-        1,
-        GameConstants.DefaultHealth
-            + (vitality - 10) * 5
-    )
-
-    humanoid.MaxHealth = maxHealth
-    humanoid.Health = maxHealth
-
-    -- Скорость
-    local agility = stats.Agility or 10
-
-    humanoid.WalkSpeed = math.clamp(
-        GameConstants.DefaultWalkSpeed
-            + (agility - 10) * 0.1,
-        8,
-        30
-    )
-
-    -- Атрибуты и мана (при возрождении мана восстанавливается полностью)
-    self:RefreshAttributes(player, profile)
+    humanoid.Health = humanoid.MaxHealth
     player:SetAttribute("Mana", player:GetAttribute("MaxMana"))
 
     print("[CharacterService] Stats applied:", player.Name)
@@ -96,7 +118,8 @@ end
 
 -- amount = nil восстанавливает ману полностью.
 function CharacterService:RestoreMana(player, amount)
-    local maxMana = player:GetAttribute("MaxMana") or GameConstants.MaxMana
+    local maxMana = player:GetAttribute("MaxMana")
+        or (GameConstants.BaseStatValue * GameConstants.ManaPerPoint)
     local mana = player:GetAttribute("Mana") or 0
 
     if amount == nil then
