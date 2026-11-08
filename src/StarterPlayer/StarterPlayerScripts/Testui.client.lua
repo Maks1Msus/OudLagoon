@@ -262,7 +262,12 @@ local function renderProfile(data)
         local value = data.Stats[statName]
 
         row.Label.Text = string.format("%s: %s", statName, tostring(value or "-"))
+
+        -- Не показываем кнопку, если характеристика достигла серверного лимита.
+        -- Серверная проверка остаётся обязательной: клиентскому UI доверять нельзя.
         row.Button.Visible = points > 0
+            and type(value) == "number"
+            and value < ProgressionConfig.MaxStatValue
     end
 end
 
