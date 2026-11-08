@@ -1,0 +1,21 @@
+
+# Roblox place/build files
+*.rbxl
+*.rbxlx
+/build/
+
+# Logs
+*.log
+
+# Local editor settings
+.vscode/
+
+# Temporary files
+*.tmp
+*.bak
+.DS_Store
+
+# Secrets
+.env
+.env.*
+!.env.example
