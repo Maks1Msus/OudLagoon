@@ -1,0 +1,467 @@
+diff --git a/src/ReplicatedStorage/Shared/Config/CombatStateConfig.lua b/src/ReplicatedStorage/Shared/Config/CombatStateConfig.lua
+new file mode 100644
+index 0000000..7272270
+--- /dev/null
++++ b/src/ReplicatedStorage/Shared/Config/CombatStateConfig.lua
+@@ -0,0 +1,24 @@
++-- Глобальные параметры защиты, уклонения и оглушения.
++-- Все значения предварительные, для тестирования. Время в секундах, расстояния в studs.
++-- Параметры конкретного оружия (длительность фаз атаки, кулдаун) лежат в CombatConfig.
++
++local CombatStateConfig = {}
++
++CombatStateConfig.Block = {
++    DamageReduction = 0.70, -- доля поглощаемого урона при обычном блоке
++    ParryWindow = 0.25,     -- сколько после начала блока действует окно парирования
++}
++
++CombatStateConfig.Dodge = {
++    Duration = 0.35,        -- длительность рывка
++    IFrameDuration = 0.20,  -- неуязвимость: только начало рывка
++    Distance = 8,
++    Cooldown = 1.0,         -- отсчитывается от начала уклонения
++}
++
++CombatStateConfig.Stun = {
++    DefaultDuration = 1.0,
++    MaxDuration = 5.0,
++}
++
++return CombatStateConfig
+diff --git a/src/ReplicatedStorage/Shared/Constants/CombatStates.lua b/src/ReplicatedStorage/Shared/Constants/CombatStates.lua
+new file mode 100644
+index 0000000..86a596a
+--- /dev/null
++++ b/src/ReplicatedStorage/Shared/Constants/CombatStates.lua
+@@ -0,0 +1,19 @@
++-- Идентификаторы боевых состояний и фаз атаки.
++-- Общий файл: сервер хранит состояния, клиент получает их для анимаций и эффектов.
++
++local CombatStates = {
++    Idle = "Idle",
++    Attacking = "Attacking",
++    Blocking = "Blocking",
++    Dodging = "Dodging",
++    Stunned = "Stunned",
++    Dead = "Dead",
++
++    AttackPhases = {
++        Startup = "Startup",
++        Active = "Active",
++        Recovery = "Recovery",
++    },
++}
++
++return CombatStates
+diff --git a/src/ServerScriptService/Framework.server.lua b/src/ServerScriptService/Framework.server.lua
+index a3ee8a9..748b26d 100644
+--- a/src/ServerScriptService/Framework.server.lua
++++ b/src/ServerScriptService/Framework.server.lua
+@@ -9,6 +9,7 @@ local DebugService = require(Services.DebugService)
+ local ProgressionService = require(
+     Services.ProgressionService
+ )
++local CombatStateService = require(Services.CombatStateService)
+ local CombatService = require(Services.CombatService)
+ 
+ local GameConfig = require(
+@@ -19,6 +20,7 @@ local GameConfig = require(
+ RemoteService:Init()
+ PlayerService:Init()
+ ProgressionService:Init()
++CombatStateService:Init()
+ CombatService:Init()
+ DebugService:Init() -- активен только в Roblox Studio
+ 
+diff --git a/src/ServerScriptService/Services/CombatStateService.lua b/src/ServerScriptService/Services/CombatStateService.lua
+new file mode 100644
+index 0000000..5fa715f
+--- /dev/null
++++ b/src/ServerScriptService/Services/CombatStateService.lua
+@@ -0,0 +1,386 @@
++-- CombatStateService контролирует, что персонажу РАЗРЕШЕНО делать прямо сейчас.
++-- Он хранит состояние, фазу атаки, кулдауны и защищает от устаревших таймеров.
++-- Сам он боевых действий не выполняет (поиск целей, урон: это CombatService)
++-- и не зависит от CombatService, поэтому циклических зависимостей нет.
++--
++-- ЭТАП 1 (фундамент): хранение, переходы, защита от устаревших таймеров,
++-- проверки CanAttack/CanBlock/CanDodge, SetDead/ResetCharacter, подписки на события.
++-- Следующие этапы добавят: StartAttack (фазы), ApplyStun, StartBlock/StopBlock,
++-- StartDodge, ApplyDamage. Они будут строиться на Transition() и Delay() из этого файла.
++
++local Players = game:GetService("Players")
++local ReplicatedStorage = game:GetService("ReplicatedStorage")
++
++local CombatConfig = require(
++    ReplicatedStorage.Shared.Config.CombatConfig
++)
++
++local CombatStateConfig = require(
++    ReplicatedStorage.Shared.Config.CombatStateConfig
++)
++
++local CombatStates = require(
++    ReplicatedStorage.Shared.Constants.CombatStates
++)
++
++local CombatStateService = {}
++
++local State = CombatStates
++local Phase = CombatStates.AttackPhases
++
++local function Log(...)
++    if CombatConfig.DebugLogging then
++        print("[CombatStateService]", ...)
++    end
++end
++
++-- ТАБЛИЦЫ ---------------------------------------------------------------
++
++local function ToSet(list)
++    local set = {}
++
++    for _, value in pairs(list) do
++        set[value] = true
++    end
++
++    return set
++end
++
++local ValidStates = {}
++
++for _, value in pairs(CombatStates) do
++    if type(value) == "string" then
++        ValidStates[value] = true
++    end
++end
++
++local ValidPhases = ToSet(Phase)
++
++-- Допустимые переходы. Из Dead выхода нет: только ResetCharacter (новый персонаж).
++-- Переход в то же состояние не допускается (повторное оглушение обновляет таймер
++-- отдельной логикой на этапе 3, а не переходом).
++local AllowedTransitions = {
++    [State.Idle] = ToSet({ State.Attacking, State.Blocking, State.Dodging, State.Stunned, State.Dead }),
++    [State.Attacking] = ToSet({ State.Idle, State.Blocking, State.Dodging, State.Stunned, State.Dead }),
++    [State.Blocking] = ToSet({ State.Idle, State.Stunned, State.Dead }),
++    [State.Dodging] = ToSet({ State.Idle, State.Stunned, State.Dead }),
++    [State.Stunned] = ToSet({ State.Idle, State.Dead }),
++    [State.Dead] = ToSet({}),
++}
++
++-- В какое поле записи складываются данные состояния
++local SubRecordKey = {
++    [State.Attacking] = "Attack",
++    [State.Blocking] = "Block",
++    [State.Dodging] = "Dodge",
++    [State.Stunned] = "Stun",
++}
++
++-- ХРАНИЛИЩЕ -------------------------------------------------------------
++
++-- [character] = запись. Слабые ключи: запись исчезает вместе с удалённым персонажем.
++-- Ключ именно персонаж (а не игрок), поэтому после респавна состояние снова Idle.
++local Records = setmetatable({}, { __mode = "k" })
++
++-- Идентификаторы глобальные, а не по персонажам: так таймер, созданный до сброса или
++-- респавна, никогда не совпадёт с идентификатором новой записи.
++local transitionCounter = 0
++local attackCounter = 0
++
++local function NewRecord()
++    transitionCounter += 1
++
++    return {
++        State = State.Idle,
++        StateStartedAt = os.clock(),
++        StateEndsAt = nil,
++
++        -- Подзаписи существуют только пока активно соответствующее состояние
++        Attack = nil, -- { AttackId, Phase, PhaseStartedAt, PhaseEndsAt, HitTargets, ... }
++        Block = nil,
++        Dodge = nil,
++        Stun = nil,
++
++        -- Кулдауны переживают смену состояния
++        Cooldowns = { Dodge = 0 },
++
++        TransitionId = transitionCounter,
++    }
++end
++
++local function GetRecord(character)
++    assert(character ~= nil, "[CombatStateService] character is required")
++
++    local record = Records[character]
++
++    if not record then
++        record = NewRecord()
++        Records[character] = record
++    end
++
++    return record
++end
++
++-- СОБЫТИЯ ---------------------------------------------------------------
++
++local function CreateSignal()
++    local listeners = {}
++    local signal = {}
++
++    function signal.Connect(callback)
++        table.insert(listeners, callback)
++
++        return function()
++            local index = table.find(listeners, callback)
++
++            if index then
++                table.remove(listeners, index)
++            end
++        end
++    end
++
++    function signal.Fire(...)
++        -- Копия списка: подписчик может отписаться прямо во время обработки
++        for _, listener in ipairs(table.clone(listeners)) do
++            local ok, err = pcall(listener, ...)
++
++            if not ok then
++                warn("[CombatStateService] Listener error:", err)
++            end
++        end
++    end
++
++    return signal
++end
++
++local StateChanged = CreateSignal()
++local AttackPhaseChanged = CreateSignal()
++
++-- callback(character, newState, oldState, transitionId). Возвращает функцию отписки.
++function CombatStateService:OnStateChanged(callback)
++    return StateChanged.Connect(callback)
++end
++
++-- callback(character, phase, attackId). Возвращает функцию отписки.
++function CombatStateService:OnAttackPhaseChanged(callback)
++    return AttackPhaseChanged.Connect(callback)
++end
++
++-- ПРОВЕРКИ --------------------------------------------------------------
++
++-- Можно ли сейчас перейти в newState. Возвращает true либо false, <причина>.
++local function CanEnter(record, newState, now)
++    local allowed = AllowedTransitions[record.State]
++
++    if not allowed or not allowed[newState] then
++        return false, "TransitionNotAllowed"
++    end
++
++    -- Во время атаки блок и уклонение разрешены только в Recovery и только если
++    -- это разрешено настройками оружия (копируются в запись при начале атаки).
++    if record.State == State.Attacking
++        and (newState == State.Blocking or newState == State.Dodging)
++    then
++        local attack = record.Attack
++
++        if not attack or attack.Phase ~= Phase.Recovery then
++            return false, "AttackPhase"
++        end
++
++        local permitted = (newState == State.Blocking and attack.CanBlockDuringRecovery)
++            or (newState == State.Dodging and attack.CanDodgeDuringRecovery)
++
++        if not permitted then
++            return false, "WeaponForbids"
++        end
++    end
++
++    if newState == State.Dodging and now < record.Cooldowns.Dodge then
++        return false, "Cooldown"
++    end
++
++    return true
++end
++
++-- Все Can* возвращают true либо false, <причина>.
++function CombatStateService:CanAttack(character)
++    return CanEnter(GetRecord(character), State.Attacking, os.clock())
++end
++
++function CombatStateService:CanBlock(character)
++    return CanEnter(GetRecord(character), State.Blocking, os.clock())
++end
++
++function CombatStateService:CanDodge(character)
++    return CanEnter(GetRecord(character), State.Dodging, os.clock())
++end
++
++function CombatStateService:GetState(character)
++    return GetRecord(character).State
++end
++
++-- Фаза текущей атаки или nil, если персонаж не атакует.
++function CombatStateService:GetAttackPhase(character)
++    local attack = GetRecord(character).Attack
++
++    return attack and attack.Phase or nil
++end
++
++function CombatStateService:GetAttackId(character)
++    local attack = GetRecord(character).Attack
++
++    return attack and attack.AttackId or nil
++end
++
++-- ТАЙМЕРЫ ---------------------------------------------------------------
++
++-- Выполняет callback через seconds, но только если персонаж всё ещё находится в том же
++-- состоянии, в котором был при вызове (тот же вход в состояние). Любой переход
++-- (оглушение, смерть, конец атаки) или сброс делает все такие таймеры недействительными,
++-- поэтому устаревший таймер не может нанести урон или изменить новое состояние.
++function CombatStateService:Delay(character, seconds, callback)
++    local record = GetRecord(character)
++    local transitionId = record.TransitionId
++
++    task.delay(seconds, function()
++        if Records[character] == record and record.TransitionId == transitionId then
++            callback()
++        end
++    end)
++end
++
++-- ПЕРЕХОДЫ --------------------------------------------------------------
++
++-- Единственное место, где меняется State.
++-- options (необязательно):
++--   Duration - через сколько секунд состояние само завершится переходом в Idle
++--              (для Stunned и Dodging; Blocking держится, Attacking завершают фазы);
++--   Data     - данные подзаписи (для Attacking: Phase, CanBlockDuringRecovery,
++--              CanDodgeDuringRecovery, ...).
++-- Возвращает true, <TransitionId> либо false, <причина>.
++function CombatStateService:Transition(character, newState, options)
++    if not ValidStates[newState] then
++        return false, "UnknownState"
++    end
++
++    local record = GetRecord(character)
++    local now = os.clock()
++
++    local allowed, reason = CanEnter(record, newState, now)
++
++    if not allowed then
++        return false, reason
++    end
++
++    options = options or {}
++
++    local oldState = record.State
++    local oldKey = SubRecordKey[oldState]
++
++    if oldKey then
++        record[oldKey] = nil
++    end
++
++    transitionCounter += 1
++
++    record.TransitionId = transitionCounter
++    record.State = newState
++    record.StateStartedAt = now
++    record.StateEndsAt = options.Duration and (now + options.Duration) or nil
++
++    local newKey = SubRecordKey[newState]
++
++    if newKey then
++        local data = options.Data and table.clone(options.Data) or {}
++
++        if newState == State.Attacking then
++            attackCounter += 1
++
++            data.AttackId = attackCounter
++            data.Phase = data.Phase or Phase.Startup
++            data.PhaseStartedAt = now
++            data.PhaseEndsAt = nil
++            data.HitTargets = {} -- кого уже поразил этот удар (используется на этапе 2)
++        end
++
++        record[newKey] = data
++    end
++
++    -- Кулдаун уклонения отсчитывается от его начала и не зависит от состояния
++    if newState == State.Dodging then
++        record.Cooldowns.Dodge = now + CombatStateConfig.Dodge.Cooldown
++    end
++
++    if options.Duration then
++        self:Delay(character, options.Duration, function()
++            self:Transition(character, State.Idle)
++        end)
++    end
++
++    Log(character.Name, oldState, "->", newState, "#" .. record.TransitionId)
++
++    StateChanged.Fire(character, newState, oldState, record.TransitionId)
++
++    return true, record.TransitionId
++end
++
++-- Меняет фазу текущей атаки. attackId защищает от устаревших вызовов: если атака уже
++-- прервана или началась другая, фаза не меняется и возвращается false.
++function CombatStateService:SetAttackPhase(character, attackId, phase, duration)
++    local record = Records[character]
++    local attack = record and record.Attack
++
++    if not attack or record.State ~= State.Attacking or attack.AttackId ~= attackId then
++        return false, "StaleAttack"
++    end
++
++    if not ValidPhases[phase] then
++        return false, "UnknownPhase"
++    end
++
++    local now = os.clock()
++
++    attack.Phase = phase
++    attack.PhaseStartedAt = now
++    attack.PhaseEndsAt = duration and (now + duration) or nil
++
++    Log(character.Name, "attack", attackId, "phase", phase)
++
++    AttackPhaseChanged.Fire(character, phase, attackId)
++
++    return true
++end
++
++-- Dead: абсолютный приоритет, прерывает всё. Выход только через ResetCharacter.
++function CombatStateService:SetDead(character)
++    return self:Transition(character, State.Dead)
++end
++
++-- Полный сброс записи (новый персонаж, повторное использование NPC).
++-- Все ранее созданные таймеры становятся недействительными.
++function CombatStateService:ResetCharacter(character)
++    local oldRecord = Records[character]
++    local oldState = oldRecord and oldRecord.State or State.Idle
++
++    Records[character] = nil
++
++    local record = GetRecord(character)
++
++    if oldState ~= State.Idle then
++        StateChanged.Fire(character, State.Idle, oldState, record.TransitionId)
++    end
++end
++
++function CombatStateService:Init()
++    Players.PlayerRemoving:Connect(function(player)
++        local character = player.Character
++
++        if character then
++            Records[character] = nil
++        end
++    end)
++
++    print("[CombatStateService] Initialized")
++end
++
++return CombatStateService
