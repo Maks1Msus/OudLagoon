@@ -17,10 +17,6 @@ local CombatService = {}
 -- [player] = момент времени (os.clock), раньше которого следующая атака запрещена
 local NextAttackAt = {}
 
--- Сколько раз луч видимости может упереться в других бойцов, прежде чем проверка
--- будет считаться проваленной (защита от слишком дорогих проверок в толпе).
-local MAX_LINE_OF_SIGHT_STEPS = 10
-
 local function Log(...)
     if CombatConfig.DebugLogging then
         print("[CombatService]", ...)
@@ -157,32 +153,6 @@ local function FindHumanoidModel(part)
     return nil, nil
 end
 
--- Проверка видимости цели. Другие бойцы (игроки и NPC с Humanoid) НЕ загораживают цель:
--- иначе цели, стоящие вплотную или в ряд, "закрывали" бы друг друга и не получали урон.
--- Луч блокируют только твёрдые объекты мира (стены, террейн и т.д.).
--- ignore - список исключений, который растёт по ходу атаки и переиспользуется между целями.
-function CombatService.HasLineOfSight(rayParams, ignore, origin, targetPosition)
-    for _ = 1, MAX_LINE_OF_SIGHT_STEPS do
-        local result = workspace:Raycast(origin, targetPosition - origin, rayParams)
-
-        if not result then
-            return true
-        end
-
-        local model = FindHumanoidModel(result.Instance)
-
-        if not model then
-            return false -- мир (стена, террейн, постройка)
-        end
-
-        -- Боец не преграда: исключаем его и бросаем тот же луч заново.
-        table.insert(ignore, model)
-        rayParams.FilterDescendantsInstances = ignore
-    end
-
-    return false
-end
-
 local function IsPvPAllowed(attacker, model)
     local targetPlayer = Players:GetPlayerFromCharacter(model)
 
@@ -196,7 +166,7 @@ end
 -- Область удара определяется сервером по положению и направлению персонажа.
 -- Клиент не присылает ни цели, ни координаты.
 -- Кандидат должен пройти по порядку: жив -> корень в пределах дальности и угла ->
--- PvP разрешён -> цель видна.
+-- PvP разрешён.
 -- Возвращает (targets, stats):
 --   targets - список { Model, Humanoid, Distance }, ближайшие первыми, не больше MaxTargets;
 --   stats   - сколько кандидатов найдено и почему часть отсеяна (для отладки).
@@ -215,14 +185,7 @@ function CombatService:FindTargets(attacker, character, root, weapon)
 
     local parts = workspace:GetPartBoundsInBox(boxCFrame, boxSize, overlapParams)
 
-    -- Один набор параметров луча на всю атаку
-    local ignore = { character }
-    local rayParams = RaycastParams.new()
-    rayParams.FilterType = Enum.RaycastFilterType.Exclude
-    rayParams.RespectCanCollide = true -- декоративные нетвёрдые детали не мешают
-    rayParams.FilterDescendantsInstances = ignore
-
-    local stats = { Candidates = 0, Distance = 0, Direction = 0, Blocked = 0 }
+    local stats = { Candidates = 0, Distance = 0, Direction = 0 }
     local seen = {} -- одна модель = одна цель, сколько бы её частей ни попало в область
     local targets = {}
 
@@ -242,22 +205,11 @@ function CombatService:FindTargets(attacker, character, root, weapon)
                 if not reachable then
                     stats[reason] += 1
                 elseif IsPvPAllowed(attacker, model) then
-                    if CombatConfig.RequireLineOfSight
-                        and not CombatService.HasLineOfSight(
-                            rayParams,
-                            ignore,
-                            root.Position,
-                            targetRoot.Position
-                        )
-                    then
-                        stats.Blocked += 1
-                    else
-                        table.insert(targets, {
-                            Model = model,
-                            Humanoid = humanoid,
-                            Distance = (targetRoot.Position - root.Position).Magnitude,
-                        })
-                    end
+                    table.insert(targets, {
+                        Model = model,
+                        Humanoid = humanoid,
+                        Distance = (targetRoot.Position - root.Position).Magnitude,
+                    })
                 end
             end
         end
@@ -334,9 +286,7 @@ function CombatService:PerformAttack(player)
         "rejected: distance",
         stats.Distance,
         "direction",
-        stats.Direction,
-        "blocked",
-        stats.Blocked
+        stats.Direction
     )
 
     return true, #targets
