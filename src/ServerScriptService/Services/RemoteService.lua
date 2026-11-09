@@ -12,7 +12,8 @@ local Functions = {}
 
 local EVENT_NAMES = {
     "ProfileUpdated",     -- сервер -> клиент
-    "CombatRequest",      -- клиент -> сервер (пока без обработчика)
+    "CombatRequest",      -- клиент -> сервер (см. CombatService)
+    "CombatFeedback",     -- сервер -> клиент (попадания, числа урона)
     "AbilityRequest",     -- клиент -> сервер (пока без обработчика)
     "InteractionRequest", -- клиент -> сервер (пока без обработчика)
     "DebugRequest",       -- клиент -> сервер (только Studio, см. DebugService)

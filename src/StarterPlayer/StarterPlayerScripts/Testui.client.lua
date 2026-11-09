@@ -216,6 +216,9 @@ if RunService:IsStudio() then
         { "-30 Mana", "SpendMana", 30 },
         { "Restore", "RestoreAll", nil },
         { "Save now", "SaveNow", nil },
+        { "Spawn dummy", "SpawnDummy", nil },
+        { "Give sword", "GiveSword", nil },
+        { "+50 points", "AddStatPoints", 50 },
     }
 
     for index, info in ipairs(buttons) do

@@ -9,6 +9,7 @@ local DebugService = require(Services.DebugService)
 local ProgressionService = require(
     Services.ProgressionService
 )
+local CombatService = require(Services.CombatService)
 
 local GameConfig = require(
     ReplicatedStorage.Shared.Config.GameConfig
@@ -18,6 +19,7 @@ local GameConfig = require(
 RemoteService:Init()
 PlayerService:Init()
 ProgressionService:Init()
+CombatService:Init()
 DebugService:Init() -- активен только в Roblox Studio
 
 print("================================")
