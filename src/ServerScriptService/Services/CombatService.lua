@@ -17,6 +17,10 @@ local CombatService = {}
 -- [player] = момент времени (os.clock), раньше которого следующая атака запрещена
 local NextAttackAt = {}
 
+-- Сколько раз луч видимости может упереться в других бойцов, прежде чем проверка
+-- будет считаться проваленной (защита от слишком дорогих проверок в толпе).
+local MAX_LINE_OF_SIGHT_STEPS = 10
+
 local function Log(...)
     if CombatConfig.DebugLogging then
         print("[CombatService]", ...)
@@ -69,6 +73,71 @@ function CombatService:TryStartCooldown(player, cooldown, now)
     return true
 end
 
+-- ДОСТИЖИМОСТЬ ЦЕЛИ (ПО КОРНЕВОЙ ЧАСТИ) ---------------------------------
+
+-- Чистая геометрия на числах (а не на Vector3), чтобы её было легко тестировать.
+-- offset  - вектор от корня атакующего к корню цели;
+-- look    - направление взгляда атакующего (достаточно X и Z).
+-- Расстояние считается в 3D, направление - в горизонтальной плоскости.
+-- Возвращает true либо false, "Distance" | "Direction".
+function CombatService.CheckReach(
+    offsetX,
+    offsetY,
+    offsetZ,
+    lookX,
+    lookZ,
+    maxDistance,
+    maxAngleDegrees,
+    minDirectionDistance
+)
+    local distance = math.sqrt(
+        offsetX * offsetX + offsetY * offsetY + offsetZ * offsetZ
+    )
+
+    if distance > maxDistance then
+        return false, "Distance"
+    end
+
+    local flatDistance = math.sqrt(offsetX * offsetX + offsetZ * offsetZ)
+    local flatLook = math.sqrt(lookX * lookX + lookZ * lookZ)
+
+    -- Цель практически вплотную или направление взгляда не определить:
+    -- направление не проверяем (иначе вплотную стоящая цель "пропадала бы").
+    if flatDistance <= minDirectionDistance or flatLook < 1e-3 then
+        return true
+    end
+
+    local cosAngle = (offsetX * lookX + offsetZ * lookZ) / (flatDistance * flatLook)
+
+    if cosAngle < math.cos(math.rad(maxAngleDegrees)) then
+        return false, "Direction"
+    end
+
+    return true
+end
+
+-- Проверка расстояния и направления до HumanoidRootPart цели.
+-- Область удара (hitbox) находит кандидатов по ЛЮБЫМ частям модели, поэтому у крупных
+-- NPC она может зацепить тело, корень которого лежит далеко за пределами досягаемости.
+local function IsRootReachable(attackerRoot, targetRoot, weapon)
+    local offset = targetRoot.Position - attackerRoot.Position
+    local look = attackerRoot.CFrame.LookVector
+
+    local tolerance = weapon.RootRangeTolerance or CombatConfig.RootRangeTolerance
+    local maxAngle = weapon.MaxAttackAngle or CombatConfig.MaxAttackAngle
+
+    return CombatService.CheckReach(
+        offset.X,
+        offset.Y,
+        offset.Z,
+        look.X,
+        look.Z,
+        weapon.AttackRange + tolerance,
+        maxAngle,
+        CombatConfig.DirectionCheckMinDistance
+    )
+end
+
 -- ПОИСК ЦЕЛЕЙ -----------------------------------------------------------
 
 -- Поднимается от части модели к ближайшей модели, в которой есть Humanoid.
@@ -88,43 +157,53 @@ local function FindHumanoidModel(part)
     return nil, nil
 end
 
-local function HasLineOfSight(attackerCharacter, attackerRoot, targetModel, targetRoot)
-    local params = RaycastParams.new()
-    params.FilterType = Enum.RaycastFilterType.Exclude
-    params.FilterDescendantsInstances = { attackerCharacter, targetModel }
-    params.RespectCanCollide = true -- декоративные нетвёрдые детали не мешают
+-- Проверка видимости цели. Другие бойцы (игроки и NPC с Humanoid) НЕ загораживают цель:
+-- иначе цели, стоящие вплотную или в ряд, "закрывали" бы друг друга и не получали урон.
+-- Луч блокируют только твёрдые объекты мира (стены, террейн и т.д.).
+-- ignore - список исключений, который растёт по ходу атаки и переиспользуется между целями.
+function CombatService.HasLineOfSight(rayParams, ignore, origin, targetPosition)
+    for _ = 1, MAX_LINE_OF_SIGHT_STEPS do
+        local result = workspace:Raycast(origin, targetPosition - origin, rayParams)
 
-    local origin = attackerRoot.Position
-    local result = workspace:Raycast(origin, targetRoot.Position - origin, params)
+        if not result then
+            return true
+        end
 
-    return result == nil
+        local model = FindHumanoidModel(result.Instance)
+
+        if not model then
+            return false -- мир (стена, террейн, постройка)
+        end
+
+        -- Боец не преграда: исключаем его и бросаем тот же луч заново.
+        table.insert(ignore, model)
+        rayParams.FilterDescendantsInstances = ignore
+    end
+
+    return false
 end
 
-local function IsValidTarget(attacker, attackerCharacter, attackerRoot, model, targetRoot)
+local function IsPvPAllowed(attacker, model)
     local targetPlayer = Players:GetPlayerFromCharacter(model)
 
-    if targetPlayer then
-        if targetPlayer == attacker or not CombatConfig.PvPEnabled then
-            return false
-        end
+    if not targetPlayer then
+        return true
     end
 
-    if CombatConfig.RequireLineOfSight
-        and not HasLineOfSight(attackerCharacter, attackerRoot, model, targetRoot)
-    then
-        return false
-    end
-
-    return true
+    return targetPlayer ~= attacker and CombatConfig.PvPEnabled
 end
 
 -- Область удара определяется сервером по положению и направлению персонажа.
 -- Клиент не присылает ни цели, ни координаты.
--- Возвращает список { Model, Humanoid, Distance }, ближайшие первыми, не больше MaxTargets.
+-- Кандидат должен пройти по порядку: жив -> корень в пределах дальности и угла ->
+-- PvP разрешён -> цель видна.
+-- Возвращает (targets, stats):
+--   targets - список { Model, Humanoid, Distance }, ближайшие первыми, не больше MaxTargets;
+--   stats   - сколько кандидатов найдено и почему часть отсеяна (для отладки).
 function CombatService:FindTargets(attacker, character, root, weapon)
-    local params = OverlapParams.new()
-    params.FilterType = Enum.RaycastFilterType.Exclude
-    params.FilterDescendantsInstances = { character }
+    local overlapParams = OverlapParams.new()
+    overlapParams.FilterType = Enum.RaycastFilterType.Exclude
+    overlapParams.FilterDescendantsInstances = { character }
 
     local boxSize = Vector3.new(
         weapon.HitboxWidth,
@@ -134,8 +213,16 @@ function CombatService:FindTargets(attacker, character, root, weapon)
 
     local boxCFrame = root.CFrame * CFrame.new(0, 0, -weapon.AttackRange / 2)
 
-    local parts = workspace:GetPartBoundsInBox(boxCFrame, boxSize, params)
+    local parts = workspace:GetPartBoundsInBox(boxCFrame, boxSize, overlapParams)
 
+    -- Один набор параметров луча на всю атаку
+    local ignore = { character }
+    local rayParams = RaycastParams.new()
+    rayParams.FilterType = Enum.RaycastFilterType.Exclude
+    rayParams.RespectCanCollide = true -- декоративные нетвёрдые детали не мешают
+    rayParams.FilterDescendantsInstances = ignore
+
+    local stats = { Candidates = 0, Distance = 0, Direction = 0, Blocked = 0 }
     local seen = {} -- одна модель = одна цель, сколько бы её частей ни попало в область
     local targets = {}
 
@@ -147,15 +234,31 @@ function CombatService:FindTargets(attacker, character, root, weapon)
 
             local targetRoot = model:FindFirstChild("HumanoidRootPart")
 
-            if humanoid.Health > 0
-                and targetRoot
-                and IsValidTarget(attacker, character, root, model, targetRoot)
-            then
-                table.insert(targets, {
-                    Model = model,
-                    Humanoid = humanoid,
-                    Distance = (targetRoot.Position - root.Position).Magnitude,
-                })
+            if humanoid.Health > 0 and targetRoot then
+                stats.Candidates += 1
+
+                local reachable, reason = IsRootReachable(root, targetRoot, weapon)
+
+                if not reachable then
+                    stats[reason] += 1
+                elseif IsPvPAllowed(attacker, model) then
+                    if CombatConfig.RequireLineOfSight
+                        and not CombatService.HasLineOfSight(
+                            rayParams,
+                            ignore,
+                            root.Position,
+                            targetRoot.Position
+                        )
+                    then
+                        stats.Blocked += 1
+                    else
+                        table.insert(targets, {
+                            Model = model,
+                            Humanoid = humanoid,
+                            Distance = (targetRoot.Position - root.Position).Magnitude,
+                        })
+                    end
+                end
             end
         end
     end
@@ -168,7 +271,7 @@ function CombatService:FindTargets(attacker, character, root, weapon)
         table.remove(targets)
     end
 
-    return targets
+    return targets, stats
 end
 
 -- АТАКА -----------------------------------------------------------------
@@ -203,7 +306,7 @@ function CombatService:PerformAttack(player)
     end
 
     local damage = self:CalculateDamage(weapon, strength)
-    local targets = self:FindTargets(player, character, root, weapon)
+    local targets, stats = self:FindTargets(player, character, root, weapon)
 
     local feedback = RemoteService:GetEvent("CombatFeedback")
 
@@ -224,8 +327,16 @@ function CombatService:PerformAttack(player)
         weaponId,
         "damage",
         damage,
-        "targets",
-        #targets
+        "| hit",
+        #targets,
+        "| candidates",
+        stats.Candidates,
+        "rejected: distance",
+        stats.Distance,
+        "direction",
+        stats.Direction,
+        "blocked",
+        stats.Blocked
     )
 
     return true, #targets
