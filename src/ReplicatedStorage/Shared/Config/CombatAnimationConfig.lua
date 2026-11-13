@@ -27,11 +27,11 @@ CombatAnimationConfig.Slots = {
 -- Любой слот можно переопределить для оружия; иначе берётся Common.
 CombatAnimationConfig.Weapons = {
     Unarmed = {
-        Attack = "rbxassetid://0",
+        Attack = "rbxassetid://79612955840976",
     },
 
     Sword = {
-        Attack = "rbxassetid://0",
+        Attack = "rbxassetid://91695651580130",
     },
 }
 
@@ -39,8 +39,8 @@ CombatAnimationConfig.Weapons = {
 -- Сейчас подключены: Block, Stun, Dodge. Parry и Hit подключатся позже:
 -- для них серверу нужно сообщать защищающемуся результат удара.
 CombatAnimationConfig.Common = {
-    Block = "rbxassetid://0",
-    Parry = "rbxassetid://0",
+    Block = "rbxassetid://84950106442903",
+    Parry = "rbxassetid://98950245815500",
     Hit = "rbxassetid://0",
     Stun = "rbxassetid://0",
     Dodge = "rbxassetid://0",
