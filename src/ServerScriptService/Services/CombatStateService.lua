@@ -5,8 +5,10 @@
 --
 -- ЭТАП 1 (фундамент): хранение, переходы, защита от устаревших таймеров,
 -- проверки CanAttack/CanBlock/CanDodge, SetDead/ResetCharacter, подписки на события.
--- Следующие этапы добавят: StartAttack (фазы), ApplyStun, StartBlock/StopBlock,
--- StartDodge, ApplyDamage. Они будут строиться на Transition() и Delay() из этого файла.
+-- ЭТАП 2 (атака): StartAttack (Startup -> Active -> Recovery -> Idle), строгий порядок фаз,
+-- учёт попаданий (RegisterHit), проверка окна попаданий (IsAttackActive).
+-- Следующие этапы добавят: ApplyStun, StartBlock/StopBlock, StartDodge, ApplyDamage.
+-- Они строятся на Transition() и Delay() из этого файла.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -56,13 +58,21 @@ end
 
 local ValidPhases = ToSet(Phase)
 
+-- Фазы идут строго по порядку: перескочить через фазу или вернуться назад нельзя.
+local NextPhase = {
+    [Phase.Startup] = Phase.Active,
+    [Phase.Active] = Phase.Recovery,
+}
+
 -- Допустимые переходы. Из Dead выхода нет: только ResetCharacter (новый персонаж).
 -- Переход в то же состояние не допускается (повторное оглушение обновляет таймер
 -- отдельной логикой на этапе 3, а не переходом).
+-- Blocking -> Dodging разрешён: уклонение сразу завершает блок, отпускать его не нужно.
+-- Dodging -> Blocking во время рывка и Blocking -> Attacking запрещены (сначала закончить блок).
 local AllowedTransitions = {
     [State.Idle] = ToSet({ State.Attacking, State.Blocking, State.Dodging, State.Stunned, State.Dead }),
     [State.Attacking] = ToSet({ State.Idle, State.Blocking, State.Dodging, State.Stunned, State.Dead }),
-    [State.Blocking] = ToSet({ State.Idle, State.Stunned, State.Dead }),
+    [State.Blocking] = ToSet({ State.Idle, State.Dodging, State.Stunned, State.Dead }),
     [State.Dodging] = ToSet({ State.Idle, State.Stunned, State.Dead }),
     [State.Stunned] = ToSet({ State.Idle, State.Dead }),
     [State.Dead] = ToSet({}),
@@ -326,6 +336,7 @@ end
 
 -- Меняет фазу текущей атаки. attackId защищает от устаревших вызовов: если атака уже
 -- прервана или началась другая, фаза не меняется и возвращается false.
+-- Допустим только следующий по порядку шаг: Startup -> Active -> Recovery.
 function CombatStateService:SetAttackPhase(character, attackId, phase, duration)
     local record = Records[character]
     local attack = record and record.Attack
@@ -336,6 +347,10 @@ function CombatStateService:SetAttackPhase(character, attackId, phase, duration)
 
     if not ValidPhases[phase] then
         return false, "UnknownPhase"
+    end
+
+    if NextPhase[attack.Phase] ~= phase then
+        return false, "InvalidPhaseOrder"
     end
 
     local now = os.clock()
@@ -349,6 +364,106 @@ function CombatStateService:SetAttackPhase(character, attackId, phase, duration)
     AttackPhaseChanged.Fire(character, phase, attackId)
 
     return true
+end
+
+local function IsFiniteNumber(value)
+    return type(value) == "number" and value == value and value ~= math.huge and value ~= -math.huge
+end
+
+-- Параметры фаз (CombatConfig.Weapons[...].AttackTiming): Active обязана быть > 0.
+local function IsValidTiming(timing)
+    return type(timing) == "table"
+        and IsFiniteNumber(timing.Startup) and timing.Startup >= 0
+        and IsFiniteNumber(timing.Active) and timing.Active > 0
+        and IsFiniteNumber(timing.Recovery) and timing.Recovery >= 0
+end
+
+-- Запускает атаку: Attacking (Startup) -> Active -> Recovery -> Idle.
+-- Всей последовательностью управляет сервер. Таймеры привязаны к входу в состояние,
+-- поэтому любое прерывание (оглушение, смерть, уклонение из Recovery) обрывает цепочку,
+-- а устаревшие шаги ничего не меняют и не наносят урона.
+-- Возвращает true, <AttackId> либо false, <причина>.
+function CombatStateService:StartAttack(character, timing)
+    if not IsValidTiming(timing) then
+        return false, "InvalidTiming"
+    end
+
+    local ok, reason = self:Transition(character, State.Attacking, {
+        Data = {
+            Phase = Phase.Startup,
+            CanBlockDuringRecovery = timing.CanBlockDuringRecovery == true,
+            CanDodgeDuringRecovery = timing.CanDodgeDuringRecovery == true,
+        },
+    })
+
+    if not ok then
+        return false, reason
+    end
+
+    local attack = Records[character].Attack
+    local attackId = attack.AttackId
+
+    attack.PhaseEndsAt = os.clock() + timing.Startup
+
+    self:Delay(character, timing.Startup, function()
+        if not self:SetAttackPhase(character, attackId, Phase.Active, timing.Active) then
+            return
+        end
+
+        self:Delay(character, timing.Active, function()
+            if not self:SetAttackPhase(character, attackId, Phase.Recovery, timing.Recovery) then
+                return
+            end
+
+            self:Delay(character, timing.Recovery, function()
+                self:Transition(character, State.Idle)
+            end)
+        end)
+    end)
+
+    return true, attackId
+end
+
+-- true, пока атака attackId идёт и находится в фазе Active (окно регистрации попаданий).
+function CombatStateService:IsAttackActive(character, attackId)
+    local record = Records[character]
+    local attack = record and record.Attack
+
+    return attack ~= nil
+        and record.State == State.Attacking
+        and attack.AttackId == attackId
+        and attack.Phase == Phase.Active
+end
+
+-- Фиксирует попадание по цели. Возвращает true только для ПЕРВОГО попадания по этой
+-- цели в рамках данного удара и только в фазе Active; иначе false, <причина>.
+function CombatStateService:RegisterHit(character, attackId, target)
+    if not self:IsAttackActive(character, attackId) then
+        return false, "NotActive"
+    end
+
+    local hitTargets = Records[character].Attack.HitTargets
+
+    if hitTargets[target] then
+        return false, "AlreadyHit"
+    end
+
+    hitTargets[target] = true
+
+    return true
+end
+
+-- Набор целей, уже поражённых ударом attackId ([model] = true), либо nil, если удар
+-- уже не актуален. Используется, чтобы пропускать их при поиске целей.
+function CombatStateService:GetHitTargets(character, attackId)
+    local record = Records[character]
+    local attack = record and record.Attack
+
+    if not attack or attack.AttackId ~= attackId then
+        return nil
+    end
+
+    return attack.HitTargets
 end
 
 -- Dead: абсолютный приоритет, прерывает всё. Выход только через ResetCharacter.

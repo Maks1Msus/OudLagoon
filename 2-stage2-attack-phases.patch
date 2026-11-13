@@ -1,0 +1,506 @@
+diff --git a/src/ReplicatedStorage/Shared/Config/CombatConfig.lua b/src/ReplicatedStorage/Shared/Config/CombatConfig.lua
+index 25e6673..e537051 100644
+--- a/src/ReplicatedStorage/Shared/Config/CombatConfig.lua
++++ b/src/ReplicatedStorage/Shared/Config/CombatConfig.lua
+@@ -40,8 +40,19 @@ CombatConfig.HitboxHeight = 6
+ -- Печатать в Output каждую атаку (удобно при отладке, потом выключить)
+ CombatConfig.DebugLogging = true
+ 
++-- Как часто (сек) сервер проверяет попадания, пока атака находится в фазе Active.
++-- Каждая цель всё равно поражается не более одного раза за удар.
++CombatConfig.ActiveScanInterval = 0.05
++
+ -- Урон = BaseDamage + Strength * Scaling
+--- Cooldown   - пауза между атаками (сек)
++-- Cooldown   - пауза между НАЧАЛАМИ атак (сек); не зависит от длительности самого удара
++-- AttackTiming - фазы одного удара (сек):
++--   Startup  - подготовка, урон не наносится
++--   Active   - окно регистрации попаданий (урон наносится только здесь)
++--   Recovery - завершение удара
++--   CanDodgeDuringRecovery / CanBlockDuringRecovery - можно ли прервать Recovery
++--     уклонением / блоком (Startup и Active прервать нельзя)
++--   Полная длительность удара = Startup + Active + Recovery.
+ -- AttackRange - глубина области удара перед персонажем (studs)
+ -- HitboxWidth - ширина области удара (studs)
+ -- MaxTargets - сколько целей может поразить одна атака
+@@ -54,6 +65,13 @@ CombatConfig.Weapons = {
+         BaseDamage = 5,
+         Scaling = 0.5,
+         Cooldown = 0.8,
++        AttackTiming = {
++            Startup = 0.12,
++            Active = 0.15,
++            Recovery = 0.25,
++            CanDodgeDuringRecovery = true,
++            CanBlockDuringRecovery = true,
++        },
+         AttackRange = 5,
+         HitboxWidth = 4,
+         MaxTargets = 1,
+@@ -65,6 +83,13 @@ CombatConfig.Weapons = {
+         BaseDamage = 15,
+         Scaling = 0.8,
+         Cooldown = 1.0,
++        AttackTiming = {
++            Startup = 0.20,
++            Active = 0.20,
++            Recovery = 0.30,
++            CanDodgeDuringRecovery = true,
++            CanBlockDuringRecovery = true,
++        },
+         AttackRange = 6,
+         HitboxWidth = 5,
+         MaxTargets = 3,
+diff --git a/src/ServerScriptService/Services/CombatService.lua b/src/ServerScriptService/Services/CombatService.lua
+index fadb4de..0f50b33 100644
+--- a/src/ServerScriptService/Services/CombatService.lua
++++ b/src/ServerScriptService/Services/CombatService.lua
+@@ -9,14 +9,23 @@ local GameConstants = require(
+     ReplicatedStorage.Shared.Constants.GameConstants
+ )
+ 
++local CombatStates = require(
++    ReplicatedStorage.Shared.Constants.CombatStates
++)
++
+ local DataService = require(script.Parent.DataService)
+ local RemoteService = require(script.Parent.RemoteService)
++local CombatStateService = require(script.Parent.CombatStateService)
+ 
+ local CombatService = {}
+ 
+ -- [player] = момент времени (os.clock), раньше которого следующая атака запрещена
+ local NextAttackAt = {}
+ 
++-- [character] = данные текущего удара, пока он не завершился:
++-- { AttackId, Player, Character, WeaponId, Weapon }
++local Attacks = setmetatable({}, { __mode = "k" })
++
+ local function Log(...)
+     if CombatConfig.DebugLogging then
+         print("[CombatService]", ...)
+@@ -167,10 +176,16 @@ end
+ -- Клиент не присылает ни цели, ни координаты.
+ -- Кандидат должен пройти по порядку: жив -> корень в пределах дальности и угла ->
+ -- PvP разрешён.
++-- options (необязательно) нужны окну попаданий Active, где область проверяется много раз:
++--   Excluded - набор моделей, уже поражённых этим ударом (пропускаются ДО подсчёта лимита);
++--   Limit    - сколько целей ещё можно поразить (по умолчанию weapon.MaxTargets).
+ -- Возвращает (targets, stats):
+---   targets - список { Model, Humanoid, Distance }, ближайшие первыми, не больше MaxTargets;
++--   targets - список { Model, Humanoid, Distance }, ближайшие первыми, не больше лимита;
+ --   stats   - сколько кандидатов найдено и почему часть отсеяна (для отладки).
+-function CombatService:FindTargets(attacker, character, root, weapon)
++function CombatService:FindTargets(attacker, character, root, weapon, options)
++    local excluded = options and options.Excluded
++    local limit = options and options.Limit or weapon.MaxTargets
++
+     local overlapParams = OverlapParams.new()
+     overlapParams.FilterType = Enum.RaycastFilterType.Exclude
+     overlapParams.FilterDescendantsInstances = { character }
+@@ -197,7 +212,7 @@ function CombatService:FindTargets(attacker, character, root, weapon)
+ 
+             local targetRoot = model:FindFirstChild("HumanoidRootPart")
+ 
+-            if humanoid.Health > 0 and targetRoot then
++            if humanoid.Health > 0 and targetRoot and not (excluded and excluded[model]) then
+                 stats.Candidates += 1
+ 
+                 local reachable, reason = IsRootReachable(root, targetRoot, weapon)
+@@ -219,7 +234,7 @@ function CombatService:FindTargets(attacker, character, root, weapon)
+         return a.Distance < b.Distance
+     end)
+ 
+-    while #targets > weapon.MaxTargets do
++    while #targets > limit do
+         table.remove(targets)
+     end
+ 
+@@ -228,8 +243,99 @@ end
+ 
+ -- АТАКА -----------------------------------------------------------------
+ 
+--- Единый алгоритм для атаки без оружия и с оружием.
+--- Возвращает true, <число пораженных целей> либо false, <причина>.
++-- Окно попаданий. Пока удар находится в фазе Active, область удара проверяется каждые
++-- ActiveScanInterval секунд. Каждая цель поражается не более одного раза за удар
++-- (учёт ведёт CombatStateService:RegisterHit), а всего за удар не больше MaxTargets.
++-- Фазы, прерывание и устаревшие таймеры контролирует CombatStateService: как только удар
++-- перестаёт быть активным (оглушение, смерть, конец фазы), цикл завершается.
++function CombatService:RunActiveWindow(attack)
++    local player = attack.Player
++    local character = attack.Character
++    local weapon = attack.Weapon
++    local attackId = attack.AttackId
++
++    local profile = DataService:GetProfile(player)
++
++    if not profile then
++        return
++    end
++
++    local strength = profile.Stats.Strength
++
++    if type(strength) ~= "number" then
++        strength = GameConstants.BaseStatValue
++    end
++
++    -- Урон считается один раз на удар, в момент начала Active
++    local damage = self:CalculateDamage(weapon, strength)
++    local feedback = RemoteService:GetEvent("CombatFeedback")
++
++    local hits = 0
++    local scans = 0
++
++    while CombatStateService:IsAttackActive(character, attackId) do
++        local humanoid = character:FindFirstChildOfClass("Humanoid")
++        local root = character:FindFirstChild("HumanoidRootPart")
++        local remaining = weapon.MaxTargets - hits
++
++        -- Персонаж погиб или удалён, либо лимит целей исчерпан: окно закрывается
++        if character.Parent == nil
++            or not humanoid
++            or humanoid.Health <= 0
++            or not root
++            or remaining <= 0
++        then
++            break
++        end
++
++        scans += 1
++
++        local targets, stats = self:FindTargets(player, character, root, weapon, {
++            Excluded = CombatStateService:GetHitTargets(character, attackId),
++            Limit = remaining,
++        })
++
++        for _, target in ipairs(targets) do
++            -- RegisterHit подтверждает, что удар ещё в Active и цель ещё не поражена
++            if CombatStateService:RegisterHit(character, attackId, target.Model) then
++                hits += 1
++
++                target.Humanoid:TakeDamage(damage)
++
++                -- Подтверждение попадания только атакующему (числа урона, эффекты)
++                feedback:FireClient(player, {
++                    Kind = "Hit",
++                    Target = target.Model,
++                    Damage = damage,
++                })
++            end
++        end
++
++        if #targets > 0 or stats.Candidates > 0 then
++            Log(
++                player.Name,
++                "scan",
++                scans,
++                "| hit",
++                #targets,
++                "| candidates",
++                stats.Candidates,
++                "rejected: distance",
++                stats.Distance,
++                "direction",
++                stats.Direction
++            )
++        end
++
++        task.wait(CombatConfig.ActiveScanInterval)
++    end
++
++    Log(player.Name, "attack", attackId, "window closed | hits", hits, "| scans", scans)
++end
++
++-- Запускает удар. Урон здесь НЕ наносится: он регистрируется в фазе Active
++-- (см. RunActiveWindow). Единый алгоритм для атаки без оружия и с оружием.
++-- Возвращает true, <AttackId> либо false, <причина>.
+ function CombatService:PerformAttack(player)
+     local profile = DataService:GetProfile(player)
+ 
+@@ -245,58 +351,77 @@ function CombatService:PerformAttack(player)
+         return false, "CharacterUnavailable"
+     end
+ 
+-    local weaponId, weapon = self:GetWeapon(character)
++    -- Допустимость действия по боевому состоянию (не атакует, не блокирует, не оглушён...).
++    -- Сначала состояние: отклонённый запрос не должен расходовать кулдаун.
++    local canAttack, stateReason = CombatStateService:CanAttack(character)
+ 
+-    if not self:TryStartCooldown(player, weapon.Cooldown, os.clock()) then
+-        return false, "Cooldown"
++    if not canAttack then
++        return false, stateReason
+     end
+ 
+-    local strength = profile.Stats.Strength
++    local weaponId, weapon = self:GetWeapon(character)
+ 
+-    if type(strength) ~= "number" then
+-        strength = GameConstants.BaseStatValue
++    -- Кулдаун оружия не зависит от длительности самого удара
++    if not self:TryStartCooldown(player, weapon.Cooldown, os.clock()) then
++        return false, "Cooldown"
+     end
+ 
+-    local damage = self:CalculateDamage(weapon, strength)
+-    local targets, stats = self:FindTargets(player, character, root, weapon)
+-
+-    local feedback = RemoteService:GetEvent("CombatFeedback")
++    local started, attackId = CombatStateService:StartAttack(character, weapon.AttackTiming)
+ 
+-    for _, target in ipairs(targets) do
+-        target.Humanoid:TakeDamage(damage)
++    if not started then
++        warn("[CombatService] Could not start attack:", weaponId, attackId)
+ 
+-        -- Подтверждение попадания только атакующему (числа урона, эффекты)
+-        feedback:FireClient(player, {
+-            Kind = "Hit",
+-            Target = target.Model,
+-            Damage = damage,
+-        })
++        return false, attackId
+     end
+ 
+-    Log(
+-        player.Name,
+-        "attack",
+-        weaponId,
+-        "damage",
+-        damage,
+-        "| hit",
+-        #targets,
+-        "| candidates",
+-        stats.Candidates,
+-        "rejected: distance",
+-        stats.Distance,
+-        "direction",
+-        stats.Direction
+-    )
++    Attacks[character] = {
++        AttackId = attackId,
++        Player = player,
++        Character = character,
++        WeaponId = weaponId,
++        Weapon = weapon,
++    }
++
++    Log(player.Name, "attack", attackId, weaponId, "started")
+ 
+-    return true, #targets
++    return true, attackId
+ end
+ 
+ function CombatService:Init()
++    -- Ошибка конфигурации должна проявиться при запуске, а не в бою
++    for weaponId, weapon in pairs(CombatConfig.Weapons) do
++        assert(
++            type(weapon.AttackTiming) == "table",
++            "[CombatService] Weapon '" .. tostring(weaponId) .. "' has no AttackTiming"
++        )
++    end
++
+     Players.PlayerRemoving:Connect(function(player)
+         NextAttackAt[player] = nil
+     end)
+ 
++    -- Фаза Active началась: запускаем окно попаданий этого удара
++    CombatStateService:OnAttackPhaseChanged(function(character, phase, attackId)
++        if phase ~= CombatStates.AttackPhases.Active then
++            return
++        end
++
++        local attack = Attacks[character]
++
++        if attack and attack.AttackId == attackId then
++            task.spawn(function()
++                self:RunActiveWindow(attack)
++            end)
++        end
++    end)
++
++    -- Удар закончился (в том числе прерван): данные удара больше не нужны
++    CombatStateService:OnStateChanged(function(character, _newState, oldState)
++        if oldState == CombatStates.Attacking then
++            Attacks[character] = nil
++        end
++    end)
++
+     -- Клиент присылает только команду "Attack": без урона, целей и координат.
+     -- RemoteService добавляет лимит частоты и проверку аргументов.
+     RemoteService:OnEvent("CombatRequest", {
+diff --git a/src/ServerScriptService/Services/CombatStateService.lua b/src/ServerScriptService/Services/CombatStateService.lua
+index 1eaab59..f5983e4 100644
+--- a/src/ServerScriptService/Services/CombatStateService.lua
++++ b/src/ServerScriptService/Services/CombatStateService.lua
+@@ -5,8 +5,10 @@
+ --
+ -- ЭТАП 1 (фундамент): хранение, переходы, защита от устаревших таймеров,
+ -- проверки CanAttack/CanBlock/CanDodge, SetDead/ResetCharacter, подписки на события.
+--- Следующие этапы добавят: StartAttack (фазы), ApplyStun, StartBlock/StopBlock,
+--- StartDodge, ApplyDamage. Они будут строиться на Transition() и Delay() из этого файла.
++-- ЭТАП 2 (атака): StartAttack (Startup -> Active -> Recovery -> Idle), строгий порядок фаз,
++-- учёт попаданий (RegisterHit), проверка окна попаданий (IsAttackActive).
++-- Следующие этапы добавят: ApplyStun, StartBlock/StopBlock, StartDodge, ApplyDamage.
++-- Они строятся на Transition() и Delay() из этого файла.
+ 
+ local Players = game:GetService("Players")
+ local ReplicatedStorage = game:GetService("ReplicatedStorage")
+@@ -56,6 +58,12 @@ end
+ 
+ local ValidPhases = ToSet(Phase)
+ 
++-- Фазы идут строго по порядку: перескочить через фазу или вернуться назад нельзя.
++local NextPhase = {
++    [Phase.Startup] = Phase.Active,
++    [Phase.Active] = Phase.Recovery,
++}
++
+ -- Допустимые переходы. Из Dead выхода нет: только ResetCharacter (новый персонаж).
+ -- Переход в то же состояние не допускается (повторное оглушение обновляет таймер
+ -- отдельной логикой на этапе 3, а не переходом).
+@@ -328,6 +336,7 @@ end
+ 
+ -- Меняет фазу текущей атаки. attackId защищает от устаревших вызовов: если атака уже
+ -- прервана или началась другая, фаза не меняется и возвращается false.
++-- Допустим только следующий по порядку шаг: Startup -> Active -> Recovery.
+ function CombatStateService:SetAttackPhase(character, attackId, phase, duration)
+     local record = Records[character]
+     local attack = record and record.Attack
+@@ -340,6 +349,10 @@ function CombatStateService:SetAttackPhase(character, attackId, phase, duration)
+         return false, "UnknownPhase"
+     end
+ 
++    if NextPhase[attack.Phase] ~= phase then
++        return false, "InvalidPhaseOrder"
++    end
++
+     local now = os.clock()
+ 
+     attack.Phase = phase
+@@ -353,6 +366,106 @@ function CombatStateService:SetAttackPhase(character, attackId, phase, duration)
+     return true
+ end
+ 
++local function IsFiniteNumber(value)
++    return type(value) == "number" and value == value and value ~= math.huge and value ~= -math.huge
++end
++
++-- Параметры фаз (CombatConfig.Weapons[...].AttackTiming): Active обязана быть > 0.
++local function IsValidTiming(timing)
++    return type(timing) == "table"
++        and IsFiniteNumber(timing.Startup) and timing.Startup >= 0
++        and IsFiniteNumber(timing.Active) and timing.Active > 0
++        and IsFiniteNumber(timing.Recovery) and timing.Recovery >= 0
++end
++
++-- Запускает атаку: Attacking (Startup) -> Active -> Recovery -> Idle.
++-- Всей последовательностью управляет сервер. Таймеры привязаны к входу в состояние,
++-- поэтому любое прерывание (оглушение, смерть, уклонение из Recovery) обрывает цепочку,
++-- а устаревшие шаги ничего не меняют и не наносят урона.
++-- Возвращает true, <AttackId> либо false, <причина>.
++function CombatStateService:StartAttack(character, timing)
++    if not IsValidTiming(timing) then
++        return false, "InvalidTiming"
++    end
++
++    local ok, reason = self:Transition(character, State.Attacking, {
++        Data = {
++            Phase = Phase.Startup,
++            CanBlockDuringRecovery = timing.CanBlockDuringRecovery == true,
++            CanDodgeDuringRecovery = timing.CanDodgeDuringRecovery == true,
++        },
++    })
++
++    if not ok then
++        return false, reason
++    end
++
++    local attack = Records[character].Attack
++    local attackId = attack.AttackId
++
++    attack.PhaseEndsAt = os.clock() + timing.Startup
++
++    self:Delay(character, timing.Startup, function()
++        if not self:SetAttackPhase(character, attackId, Phase.Active, timing.Active) then
++            return
++        end
++
++        self:Delay(character, timing.Active, function()
++            if not self:SetAttackPhase(character, attackId, Phase.Recovery, timing.Recovery) then
++                return
++            end
++
++            self:Delay(character, timing.Recovery, function()
++                self:Transition(character, State.Idle)
++            end)
++        end)
++    end)
++
++    return true, attackId
++end
++
++-- true, пока атака attackId идёт и находится в фазе Active (окно регистрации попаданий).
++function CombatStateService:IsAttackActive(character, attackId)
++    local record = Records[character]
++    local attack = record and record.Attack
++
++    return attack ~= nil
++        and record.State == State.Attacking
++        and attack.AttackId == attackId
++        and attack.Phase == Phase.Active
++end
++
++-- Фиксирует попадание по цели. Возвращает true только для ПЕРВОГО попадания по этой
++-- цели в рамках данного удара и только в фазе Active; иначе false, <причина>.
++function CombatStateService:RegisterHit(character, attackId, target)
++    if not self:IsAttackActive(character, attackId) then
++        return false, "NotActive"
++    end
++
++    local hitTargets = Records[character].Attack.HitTargets
++
++    if hitTargets[target] then
++        return false, "AlreadyHit"
++    end
++
++    hitTargets[target] = true
++
++    return true
++end
++
++-- Набор целей, уже поражённых ударом attackId ([model] = true), либо nil, если удар
++-- уже не актуален. Используется, чтобы пропускать их при поиске целей.
++function CombatStateService:GetHitTargets(character, attackId)
++    local record = Records[character]
++    local attack = record and record.Attack
++
++    if not attack or attack.AttackId ~= attackId then
++        return nil
++    end
++
++    return attack.HitTargets
++end
++
+ -- Dead: абсолютный приоритет, прерывает всё. Выход только через ResetCharacter.
+ function CombatStateService:SetDead(character)
+     return self:Transition(character, State.Dead)
+diff --git a/src/StarterPlayer/StarterPlayerScripts/CombatController.client.lua b/src/StarterPlayer/StarterPlayerScripts/CombatController.client.lua
+index 8039426..367b018 100644
+--- a/src/StarterPlayer/StarterPlayerScripts/CombatController.client.lua
++++ b/src/StarterPlayer/StarterPlayerScripts/CombatController.client.lua
+@@ -104,7 +104,12 @@ local function tryAttack()
+ 
+     local weapon = getWeaponConfig()
+ 
+-    nextAttackAt = now + weapon.Cooldown + CLIENT_COOLDOWN_MARGIN
++    -- Новый удар нельзя начать, пока идёт предыдущий (Startup + Active + Recovery),
++    -- а кулдаун оружия считается отдельно: ждём большее из двух значений.
++    local timing = weapon.AttackTiming
++    local swingDuration = timing and (timing.Startup + timing.Active + timing.Recovery) or 0
++
++    nextAttackAt = now + math.max(weapon.Cooldown, swingDuration) + CLIENT_COOLDOWN_MARGIN
+ 
+     CombatRequest:FireServer("Attack")
+     playSwing(weapon)

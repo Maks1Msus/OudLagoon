@@ -9,13 +9,22 @@ local GameConstants = require(
     ReplicatedStorage.Shared.Constants.GameConstants
 )
 
+local CombatStates = require(
+    ReplicatedStorage.Shared.Constants.CombatStates
+)
+
 local DataService = require(script.Parent.DataService)
 local RemoteService = require(script.Parent.RemoteService)
+local CombatStateService = require(script.Parent.CombatStateService)
 
 local CombatService = {}
 
 -- [player] = момент времени (os.clock), раньше которого следующая атака запрещена
 local NextAttackAt = {}
+
+-- [character] = данные текущего удара, пока он не завершился:
+-- { AttackId, Player, Character, WeaponId, Weapon }
+local Attacks = setmetatable({}, { __mode = "k" })
 
 local function Log(...)
     if CombatConfig.DebugLogging then
@@ -167,10 +176,16 @@ end
 -- Клиент не присылает ни цели, ни координаты.
 -- Кандидат должен пройти по порядку: жив -> корень в пределах дальности и угла ->
 -- PvP разрешён.
+-- options (необязательно) нужны окну попаданий Active, где область проверяется много раз:
+--   Excluded - набор моделей, уже поражённых этим ударом (пропускаются ДО подсчёта лимита);
+--   Limit    - сколько целей ещё можно поразить (по умолчанию weapon.MaxTargets).
 -- Возвращает (targets, stats):
---   targets - список { Model, Humanoid, Distance }, ближайшие первыми, не больше MaxTargets;
+--   targets - список { Model, Humanoid, Distance }, ближайшие первыми, не больше лимита;
 --   stats   - сколько кандидатов найдено и почему часть отсеяна (для отладки).
-function CombatService:FindTargets(attacker, character, root, weapon)
+function CombatService:FindTargets(attacker, character, root, weapon, options)
+    local excluded = options and options.Excluded
+    local limit = options and options.Limit or weapon.MaxTargets
+
     local overlapParams = OverlapParams.new()
     overlapParams.FilterType = Enum.RaycastFilterType.Exclude
     overlapParams.FilterDescendantsInstances = { character }
@@ -197,7 +212,7 @@ function CombatService:FindTargets(attacker, character, root, weapon)
 
             local targetRoot = model:FindFirstChild("HumanoidRootPart")
 
-            if humanoid.Health > 0 and targetRoot then
+            if humanoid.Health > 0 and targetRoot and not (excluded and excluded[model]) then
                 stats.Candidates += 1
 
                 local reachable, reason = IsRootReachable(root, targetRoot, weapon)
@@ -219,7 +234,7 @@ function CombatService:FindTargets(attacker, character, root, weapon)
         return a.Distance < b.Distance
     end)
 
-    while #targets > weapon.MaxTargets do
+    while #targets > limit do
         table.remove(targets)
     end
 
@@ -228,8 +243,99 @@ end
 
 -- АТАКА -----------------------------------------------------------------
 
--- Единый алгоритм для атаки без оружия и с оружием.
--- Возвращает true, <число пораженных целей> либо false, <причина>.
+-- Окно попаданий. Пока удар находится в фазе Active, область удара проверяется каждые
+-- ActiveScanInterval секунд. Каждая цель поражается не более одного раза за удар
+-- (учёт ведёт CombatStateService:RegisterHit), а всего за удар не больше MaxTargets.
+-- Фазы, прерывание и устаревшие таймеры контролирует CombatStateService: как только удар
+-- перестаёт быть активным (оглушение, смерть, конец фазы), цикл завершается.
+function CombatService:RunActiveWindow(attack)
+    local player = attack.Player
+    local character = attack.Character
+    local weapon = attack.Weapon
+    local attackId = attack.AttackId
+
+    local profile = DataService:GetProfile(player)
+
+    if not profile then
+        return
+    end
+
+    local strength = profile.Stats.Strength
+
+    if type(strength) ~= "number" then
+        strength = GameConstants.BaseStatValue
+    end
+
+    -- Урон считается один раз на удар, в момент начала Active
+    local damage = self:CalculateDamage(weapon, strength)
+    local feedback = RemoteService:GetEvent("CombatFeedback")
+
+    local hits = 0
+    local scans = 0
+
+    while CombatStateService:IsAttackActive(character, attackId) do
+        local humanoid = character:FindFirstChildOfClass("Humanoid")
+        local root = character:FindFirstChild("HumanoidRootPart")
+        local remaining = weapon.MaxTargets - hits
+
+        -- Персонаж погиб или удалён, либо лимит целей исчерпан: окно закрывается
+        if character.Parent == nil
+            or not humanoid
+            or humanoid.Health <= 0
+            or not root
+            or remaining <= 0
+        then
+            break
+        end
+
+        scans += 1
+
+        local targets, stats = self:FindTargets(player, character, root, weapon, {
+            Excluded = CombatStateService:GetHitTargets(character, attackId),
+            Limit = remaining,
+        })
+
+        for _, target in ipairs(targets) do
+            -- RegisterHit подтверждает, что удар ещё в Active и цель ещё не поражена
+            if CombatStateService:RegisterHit(character, attackId, target.Model) then
+                hits += 1
+
+                target.Humanoid:TakeDamage(damage)
+
+                -- Подтверждение попадания только атакующему (числа урона, эффекты)
+                feedback:FireClient(player, {
+                    Kind = "Hit",
+                    Target = target.Model,
+                    Damage = damage,
+                })
+            end
+        end
+
+        if #targets > 0 or stats.Candidates > 0 then
+            Log(
+                player.Name,
+                "scan",
+                scans,
+                "| hit",
+                #targets,
+                "| candidates",
+                stats.Candidates,
+                "rejected: distance",
+                stats.Distance,
+                "direction",
+                stats.Direction
+            )
+        end
+
+        task.wait(CombatConfig.ActiveScanInterval)
+    end
+
+    Log(player.Name, "attack", attackId, "window closed | hits", hits, "| scans", scans)
+end
+
+-- Запускает удар. Урон здесь НЕ наносится: он регистрируется в фазе Active
+-- (см. RunActiveWindow). Единый алгоритм для атаки без оружия и с оружием.
+-- Возвращает true, <AttackId> либо false, <причина>.
 function CombatService:PerformAttack(player)
     local profile = DataService:GetProfile(player)
 
@@ -245,56 +351,75 @@ function CombatService:PerformAttack(player)
         return false, "CharacterUnavailable"
     end
 
+    -- Допустимость действия по боевому состоянию (не атакует, не блокирует, не оглушён...).
+    -- Сначала состояние: отклонённый запрос не должен расходовать кулдаун.
+    local canAttack, stateReason = CombatStateService:CanAttack(character)
+
+    if not canAttack then
+        return false, stateReason
+    end
+
     local weaponId, weapon = self:GetWeapon(character)
 
+    -- Кулдаун оружия не зависит от длительности самого удара
     if not self:TryStartCooldown(player, weapon.Cooldown, os.clock()) then
         return false, "Cooldown"
     end
 
-    local strength = profile.Stats.Strength
+    local started, attackId = CombatStateService:StartAttack(character, weapon.AttackTiming)
 
-    if type(strength) ~= "number" then
-        strength = GameConstants.BaseStatValue
+    if not started then
+        warn("[CombatService] Could not start attack:", weaponId, attackId)
+
+        return false, attackId
     end
 
-    local damage = self:CalculateDamage(weapon, strength)
-    local targets, stats = self:FindTargets(player, character, root, weapon)
+    Attacks[character] = {
+        AttackId = attackId,
+        Player = player,
+        Character = character,
+        WeaponId = weaponId,
+        Weapon = weapon,
+    }
 
-    local feedback = RemoteService:GetEvent("CombatFeedback")
+    Log(player.Name, "attack", attackId, weaponId, "started")
 
-    for _, target in ipairs(targets) do
-        target.Humanoid:TakeDamage(damage)
-
-        -- Подтверждение попадания только атакующему (числа урона, эффекты)
-        feedback:FireClient(player, {
-            Kind = "Hit",
-            Target = target.Model,
-            Damage = damage,
-        })
-    end
-
-    Log(
-        player.Name,
-        "attack",
-        weaponId,
-        "damage",
-        damage,
-        "| hit",
-        #targets,
-        "| candidates",
-        stats.Candidates,
-        "rejected: distance",
-        stats.Distance,
-        "direction",
-        stats.Direction
-    )
-
-    return true, #targets
+    return true, attackId
 end
 
 function CombatService:Init()
+    -- Ошибка конфигурации должна проявиться при запуске, а не в бою
+    for weaponId, weapon in pairs(CombatConfig.Weapons) do
+        assert(
+            type(weapon.AttackTiming) == "table",
+            "[CombatService] Weapon '" .. tostring(weaponId) .. "' has no AttackTiming"
+        )
+    end
+
     Players.PlayerRemoving:Connect(function(player)
         NextAttackAt[player] = nil
+    end)
+
+    -- Фаза Active началась: запускаем окно попаданий этого удара
+    CombatStateService:OnAttackPhaseChanged(function(character, phase, attackId)
+        if phase ~= CombatStates.AttackPhases.Active then
+            return
+        end
+
+        local attack = Attacks[character]
+
+        if attack and attack.AttackId == attackId then
+            task.spawn(function()
+                self:RunActiveWindow(attack)
+            end)
+        end
+    end)
+
+    -- Удар закончился (в том числе прерван): данные удара больше не нужны
+    CombatStateService:OnStateChanged(function(character, _newState, oldState)
+        if oldState == CombatStates.Attacking then
+            Attacks[character] = nil
+        end
     end)
 
     -- Клиент присылает только команду "Attack": без урона, целей и координат.

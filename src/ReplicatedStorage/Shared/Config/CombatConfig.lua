@@ -40,8 +40,19 @@ CombatConfig.HitboxHeight = 6
 -- Печатать в Output каждую атаку (удобно при отладке, потом выключить)
 CombatConfig.DebugLogging = true
 
+-- Как часто (сек) сервер проверяет попадания, пока атака находится в фазе Active.
+-- Каждая цель всё равно поражается не более одного раза за удар.
+CombatConfig.ActiveScanInterval = 0.05
+
 -- Урон = BaseDamage + Strength * Scaling
--- Cooldown   - пауза между атаками (сек)
+-- Cooldown   - пауза между НАЧАЛАМИ атак (сек); не зависит от длительности самого удара
+-- AttackTiming - фазы одного удара (сек):
+--   Startup  - подготовка, урон не наносится
+--   Active   - окно регистрации попаданий (урон наносится только здесь)
+--   Recovery - завершение удара
+--   CanDodgeDuringRecovery / CanBlockDuringRecovery - можно ли прервать Recovery
+--     уклонением / блоком (Startup и Active прервать нельзя)
+--   Полная длительность удара = Startup + Active + Recovery.
 -- AttackRange - глубина области удара перед персонажем (studs)
 -- HitboxWidth - ширина области удара (studs)
 -- MaxTargets - сколько целей может поразить одна атака
@@ -54,6 +65,13 @@ CombatConfig.Weapons = {
         BaseDamage = 5,
         Scaling = 0.5,
         Cooldown = 0.8,
+        AttackTiming = {
+            Startup = 0.12,
+            Active = 0.15,
+            Recovery = 0.25,
+            CanDodgeDuringRecovery = true,
+            CanBlockDuringRecovery = true,
+        },
         AttackRange = 5,
         HitboxWidth = 4,
         MaxTargets = 1,
@@ -65,6 +83,13 @@ CombatConfig.Weapons = {
         BaseDamage = 15,
         Scaling = 0.8,
         Cooldown = 1.0,
+        AttackTiming = {
+            Startup = 0.20,
+            Active = 0.20,
+            Recovery = 0.30,
+            CanDodgeDuringRecovery = true,
+            CanBlockDuringRecovery = true,
+        },
         AttackRange = 6,
         HitboxWidth = 5,
         MaxTargets = 3,

@@ -104,7 +104,12 @@ local function tryAttack()
 
     local weapon = getWeaponConfig()
 
-    nextAttackAt = now + weapon.Cooldown + CLIENT_COOLDOWN_MARGIN
+    -- Новый удар нельзя начать, пока идёт предыдущий (Startup + Active + Recovery),
+    -- а кулдаун оружия считается отдельно: ждём большее из двух значений.
+    local timing = weapon.AttackTiming
+    local swingDuration = timing and (timing.Startup + timing.Active + timing.Recovery) or 0
+
+    nextAttackAt = now + math.max(weapon.Cooldown, swingDuration) + CLIENT_COOLDOWN_MARGIN
 
     CombatRequest:FireServer("Attack")
     playSwing(weapon)
