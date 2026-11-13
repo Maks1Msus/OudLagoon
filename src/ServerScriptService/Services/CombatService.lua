@@ -266,7 +266,8 @@ function CombatService:RunActiveWindow(attack)
         strength = GameConstants.BaseStatValue
     end
 
-    -- Урон считается один раз на удар, в момент начала Active
+    -- Базовый урон считается один раз на удар, в момент начала Active.
+    -- Итог для каждой цели (блок, парирование) определяет ApplyDamage.
     local damage = self:CalculateDamage(weapon, strength)
     local feedback = RemoteService:GetEvent("CombatFeedback")
 
@@ -300,14 +301,23 @@ function CombatService:RunActiveWindow(attack)
             if CombatStateService:RegisterHit(character, attackId, target.Model) then
                 hits += 1
 
-                target.Humanoid:TakeDamage(damage)
+                -- Направление блока берётся от позиции атакующего на момент попадания
+                local outcome = CombatStateService:ApplyDamage(
+                    target.Model,
+                    damage,
+                    root.Position
+                )
 
-                -- Подтверждение попадания только атакующему (числа урона, эффекты)
-                feedback:FireClient(player, {
-                    Kind = "Hit",
-                    Target = target.Model,
-                    Damage = damage,
-                })
+                -- Подтверждение попадания только атакующему (числа урона, эффекты).
+                -- Damage - сколько урона реально нанесено, Result - Hit | Blocked | Parried.
+                if outcome.Result ~= CombatStates.DamageResults.Ignored then
+                    feedback:FireClient(player, {
+                        Kind = "Hit",
+                        Target = target.Model,
+                        Damage = outcome.Damage,
+                        Result = outcome.Result,
+                    })
+                end
             end
         end
 
@@ -387,6 +397,45 @@ function CombatService:PerformAttack(player)
     return true, attackId
 end
 
+-- СОСТОЯНИЕ И БЛОК (СЕТЬ) -----------------------------------------------
+
+local STATE_REQUEST_ACTIONS = {
+    BlockStart = true,
+    BlockEnd = true,
+    Sync = true,
+}
+
+-- Отправляет игроку его текущее боевое состояние.
+local function SendState(player, payload)
+    RemoteService:GetEvent("CombatStateChanged"):FireClient(player, payload)
+end
+
+-- Клиент сообщает только о намерении ("BlockStart" / "BlockEnd" / "Sync").
+-- Разрешено ли действие, решает CombatStateService; запрещённые запросы просто отклоняются.
+-- Запоздавший или повторный BlockEnd безопасен: StopBlock действует только во время блока.
+function CombatService:HandleStateRequest(player, action)
+    local character = player.Character
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+
+    if not humanoid or humanoid.Health <= 0 then
+        return false, "CharacterUnavailable"
+    end
+
+    if action == "BlockStart" then
+        return CombatStateService:StartBlock(character)
+    elseif action == "BlockEnd" then
+        return CombatStateService:StopBlock(character)
+    end
+
+    -- Sync: клиент запрашивает актуальное состояние (после появления персонажа и т.п.)
+    SendState(player, {
+        State = CombatStateService:GetState(character),
+        Phase = CombatStateService:GetAttackPhase(character),
+    })
+
+    return true
+end
+
 function CombatService:Init()
     -- Ошибка конфигурации должна проявиться при запуске, а не в бою
     for weaponId, weapon in pairs(CombatConfig.Weapons) do
@@ -420,6 +469,43 @@ function CombatService:Init()
         if oldState == CombatStates.Attacking then
             Attacks[character] = nil
         end
+    end)
+
+    -- Репликация состояния владельцу персонажа (для интерфейса и анимаций).
+    -- Клиент состояние не определяет, а только отображает то, что сообщил сервер.
+    CombatStateService:OnStateChanged(function(character, newState, oldState, transitionId)
+        local owner = Players:GetPlayerFromCharacter(character)
+
+        if owner then
+            SendState(owner, {
+                State = newState,
+                OldState = oldState,
+                Phase = CombatStateService:GetAttackPhase(character),
+                TransitionId = transitionId,
+            })
+        end
+    end)
+
+    CombatStateService:OnAttackPhaseChanged(function(character, phase)
+        local owner = Players:GetPlayerFromCharacter(character)
+
+        if owner then
+            SendState(owner, {
+                State = CombatStates.Attacking,
+                Phase = phase,
+            })
+        end
+    end)
+
+    -- Блок: клиент присылает только "BlockStart" / "BlockEnd" / "Sync".
+    RemoteService:OnEvent("CombatStateRequest", {
+        RateLimit = 20,
+        Validate = function(action)
+            return RemoteService.Check.String(action, 16)
+                and STATE_REQUEST_ACTIONS[action] == true
+        end,
+    }, function(player, action)
+        self:HandleStateRequest(player, action)
     end)
 
     -- Клиент присылает только команду "Attack": без урона, целей и координат.

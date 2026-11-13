@@ -8,7 +8,8 @@
 -- ЭТАП 2 (атака): StartAttack (Startup -> Active -> Recovery -> Idle), строгий порядок фаз,
 -- учёт попаданий (RegisterHit), проверка окна попаданий (IsAttackActive).
 -- ЭТАП 3.1 (блок): StartBlock, StopBlock, IsBlocking, IsParryActive.
--- Следующие этапы добавят: ApplyStun, ApplyDamage (блок и парирование в уроне), StartDodge.
+-- ЭТАП 3.2 (урон): ApplyDamage (направление блока, парирование, снижение урона).
+-- Следующие этапы добавят: ApplyStun, StartDodge.
 -- Они строятся на Transition() и Delay() из этого файла.
 
 local Players = game:GetService("Players")
@@ -506,6 +507,116 @@ function CombatStateService:IsParryActive(character)
     return record.State == State.Blocking
         and block ~= nil
         and os.clock() < block.ParryEndsAt
+end
+
+-- ПОЛУЧЕНИЕ УРОНА -------------------------------------------------------
+
+local DamageResult = CombatStates.DamageResults
+
+-- Ближе этого расстояния (по горизонтали, studs) направление на источник не определить.
+local BLOCK_ARC_MIN_DISTANCE = 0.1
+
+-- Чистая геометрия на числах (а не на Vector3), чтобы её было легко тестировать.
+-- look     - направление взгляда защищающегося (достаточно X и Z);
+-- toSource - вектор от защищающегося к источнику урона (достаточно X и Z).
+-- Защищаемый сектор: +-angleDegrees/2 от направления взгляда, в горизонтальной плоскости.
+-- Если направление определить нельзя (источник вплотную или нет направления взгляда),
+-- считается, что источник внутри сектора: иначе вплотную стоящий противник "обходил" бы блок.
+function CombatStateService.IsInBlockArc(lookX, lookZ, toSourceX, toSourceZ, angleDegrees)
+    if angleDegrees >= 360 then
+        return true
+    end
+
+    local flatLook = math.sqrt(lookX * lookX + lookZ * lookZ)
+    local flatDistance = math.sqrt(toSourceX * toSourceX + toSourceZ * toSourceZ)
+
+    if flatDistance < BLOCK_ARC_MIN_DISTANCE or flatLook < 1e-3 then
+        return true
+    end
+
+    local cosAngle = (lookX * toSourceX + lookZ * toSourceZ) / (flatLook * flatDistance)
+
+    return cosAngle >= math.cos(math.rad(angleDegrees / 2))
+end
+
+-- Находится ли источник урона перед защищающимся персонажем (внутри сектора блока).
+-- Без известной позиции источника направление не проверить: блок не применяется.
+function CombatStateService:IsDamageFromFront(character, sourcePosition)
+    if typeof(sourcePosition) ~= "Vector3" then
+        return false
+    end
+
+    local root = character:FindFirstChild("HumanoidRootPart")
+
+    if not root then
+        return false
+    end
+
+    local offset = sourcePosition - root.Position
+    local look = root.CFrame.LookVector
+
+    return CombatStateService.IsInBlockArc(
+        look.X,
+        look.Z,
+        offset.X,
+        offset.Z,
+        CombatStateConfig.Block.DirectionAngle
+    )
+end
+
+-- Единственный путь нанесения боевого урона. Сервер сам решает, что произойдёт:
+--   * не блокирует, либо источник вне сектора блока (сзади, сбоку) -> полный урон (Hit);
+--   * блок и источник в секторе, окно парирования ещё идёт       -> урона нет (Parried);
+--   * блок и источник в секторе, окно парирования прошло         -> урон снижен на
+--     Block.DamageReduction (Blocked), но не меньше 1.
+-- damage         - число > 0 (уже посчитанный урон атаки);
+-- sourcePosition - Vector3 позиции атакующего (для проверки направления).
+-- Возвращает { Result = DamageResults.*, Damage = нанесено, Absorbed = поглощено }.
+-- Оглушение атакующего при парировании появится вместе с ApplyStun (следующий этап).
+function CombatStateService:ApplyDamage(character, damage, sourcePosition)
+    local function Outcome(result, applied)
+        return {
+            Result = result,
+            Damage = applied,
+            Absorbed = (IsFiniteNumber(damage) and damage > 0) and (damage - applied) or 0,
+        }
+    end
+
+    if not IsFiniteNumber(damage) or damage <= 0 then
+        return Outcome(DamageResult.Ignored, 0)
+    end
+
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+
+    if not humanoid or humanoid.Health <= 0 then
+        return Outcome(DamageResult.Ignored, 0)
+    end
+
+    local result = DamageResult.Hit
+    local applied = damage
+
+    if self:IsBlocking(character) and self:IsDamageFromFront(character, sourcePosition) then
+        if self:IsParryActive(character) then
+            result = DamageResult.Parried
+            applied = 0
+        else
+            result = DamageResult.Blocked
+
+            local reduced = math.floor(
+                damage * (1 - CombatStateConfig.Block.DamageReduction) + 0.5
+            )
+
+            applied = math.min(damage, math.max(1, reduced))
+        end
+    end
+
+    if applied > 0 then
+        humanoid:TakeDamage(applied)
+    end
+
+    Log(character.Name, "damage", damage, "->", applied, result)
+
+    return Outcome(result, applied)
 end
 
 -- Dead: абсолютный приоритет, прерывает всё. Выход только через ResetCharacter.

@@ -14,6 +14,14 @@ local CombatStates = {
         Active = "Active",
         Recovery = "Recovery",
     },
+
+    -- Итог обработки урона (CombatStateService:ApplyDamage)
+    DamageResults = {
+        Hit = "Hit",         -- урон прошёл полностью
+        Blocked = "Blocked", -- урон снижен блоком
+        Parried = "Parried", -- удар парирован, урон не нанесён
+        Ignored = "Ignored", -- цель мертва/недоступна или урон некорректен
+    },
 }
 
 return CombatStates

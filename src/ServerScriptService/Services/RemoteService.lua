@@ -14,6 +14,8 @@ local EVENT_NAMES = {
     "ProfileUpdated",     -- сервер -> клиент
     "CombatRequest",      -- клиент -> сервер (см. CombatService)
     "CombatFeedback",     -- сервер -> клиент (попадания, числа урона)
+    "CombatStateRequest", -- клиент -> сервер: "BlockStart" | "BlockEnd" | "Sync" (см. CombatService)
+    "CombatStateChanged", -- сервер -> клиент: { State, OldState, Phase, TransitionId }
     "AbilityRequest",     -- клиент -> сервер (пока без обработчика)
     "InteractionRequest", -- клиент -> сервер (пока без обработчика)
     "DebugRequest",       -- клиент -> сервер (только Studio, см. DebugService)
