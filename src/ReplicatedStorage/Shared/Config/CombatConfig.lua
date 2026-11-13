@@ -74,7 +74,7 @@ CombatConfig.Weapons = {
         },
         AttackRange = 5,
         HitboxWidth = 4,
-        MaxTargets = 1,
+        MaxTargets = 5,
         AnimationId = nil,
     },
 
@@ -92,7 +92,7 @@ CombatConfig.Weapons = {
         },
         AttackRange = 6,
         HitboxWidth = 5,
-        MaxTargets = 3,
+        MaxTargets = 5,
         AnimationId = nil,
     },
 }

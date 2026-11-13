@@ -7,7 +7,8 @@
 -- проверки CanAttack/CanBlock/CanDodge, SetDead/ResetCharacter, подписки на события.
 -- ЭТАП 2 (атака): StartAttack (Startup -> Active -> Recovery -> Idle), строгий порядок фаз,
 -- учёт попаданий (RegisterHit), проверка окна попаданий (IsAttackActive).
--- Следующие этапы добавят: ApplyStun, StartBlock/StopBlock, StartDodge, ApplyDamage.
+-- ЭТАП 3.1 (блок): StartBlock, StopBlock, IsBlocking, IsParryActive.
+-- Следующие этапы добавят: ApplyStun, ApplyDamage (блок и парирование в уроне), StartDodge.
 -- Они строятся на Transition() и Delay() из этого файла.
 
 local Players = game:GetService("Players")
@@ -311,6 +312,9 @@ function CombatStateService:Transition(character, newState, options)
             data.PhaseStartedAt = now
             data.PhaseEndsAt = nil
             data.HitTargets = {} -- кого уже поразил этот удар (используется на этапе 2)
+        elseif newState == State.Blocking then
+            data.StartedAt = now
+            data.ParryEndsAt = now + CombatStateConfig.Block.ParryWindow
         end
 
         record[newKey] = data
@@ -466,6 +470,44 @@ function CombatStateService:GetHitTargets(character, attackId)
     return attack.HitTargets
 end
 
+-- БЛОКИРОВАНИЕ ----------------------------------------------------------
+
+-- Начинает блок. Допустимость (состояние, фаза собственной атаки, настройки оружия)
+-- проверяет Transition: нельзя начать блок в Startup/Active своей атаки, в Recovery можно
+-- только при CanBlockDuringRecovery, а из уклонения и оглушения нельзя вообще.
+-- Окно парирования отсчитывается серверным временем от этого момента.
+-- Повторный вызов во время блока отклоняется и окно парирования НЕ обновляет.
+-- Возвращает true, <TransitionId> либо false, <причина>.
+function CombatStateService:StartBlock(character)
+    return self:Transition(character, State.Blocking)
+end
+
+-- Завершает блок. Действует только если персонаж сейчас блокирует: если блок уже снят
+-- уклонением, оглушением или смертью, состояние не меняется, поэтому запоздавший
+-- BlockEnd от клиента безопасен. Возвращает true либо false, <причина>.
+function CombatStateService:StopBlock(character)
+    if GetRecord(character).State ~= State.Blocking then
+        return false, "NotBlocking"
+    end
+
+    return self:Transition(character, State.Idle)
+end
+
+function CombatStateService:IsBlocking(character)
+    return GetRecord(character).State == State.Blocking
+end
+
+-- true, пока идёт окно парирования: блок активен и с его начала прошло меньше ParryWindow.
+-- Считается по серверному времени, отдельный таймер не нужен.
+function CombatStateService:IsParryActive(character)
+    local record = GetRecord(character)
+    local block = record.Block
+
+    return record.State == State.Blocking
+        and block ~= nil
+        and os.clock() < block.ParryEndsAt
+end
+
 -- Dead: абсолютный приоритет, прерывает всё. Выход только через ResetCharacter.
 function CombatStateService:SetDead(character)
     return self:Transition(character, State.Dead)
@@ -486,7 +528,33 @@ function CombatStateService:ResetCharacter(character)
     end
 end
 
+-- Ошибки конфигурации должны проявляться при запуске, а не посреди боя.
+local function ValidateConfig()
+    local block = CombatStateConfig.Block
+
+    assert(
+        IsFiniteNumber(block.ParryWindow) and block.ParryWindow >= 0,
+        "[CombatStateService] Block.ParryWindow must be a number >= 0"
+    )
+
+    assert(
+        IsFiniteNumber(block.DamageReduction)
+            and block.DamageReduction >= 0
+            and block.DamageReduction <= 1,
+        "[CombatStateService] Block.DamageReduction must be a number in [0, 1]"
+    )
+
+    assert(
+        IsFiniteNumber(block.DirectionAngle)
+            and block.DirectionAngle > 0
+            and block.DirectionAngle <= 360,
+        "[CombatStateService] Block.DirectionAngle must be a number in (0, 360]"
+    )
+end
+
 function CombatStateService:Init()
+    ValidateConfig()
+
     Players.PlayerRemoving:Connect(function(player)
         local character = player.Character
 

@@ -7,6 +7,8 @@ local CombatStateConfig = {}
 CombatStateConfig.Block = {
     DamageReduction = 0.70, -- доля поглощаемого урона при обычном блоке
     ParryWindow = 0.25,     -- сколько после начала блока действует окно парирования
+    DirectionAngle = 120,   -- ширина защищаемого сектора спереди, градусы (весь сектор:
+                            -- +-60 от направления взгляда); используется при обработке урона
 }
 
 CombatStateConfig.Dodge = {
