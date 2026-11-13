@@ -56,7 +56,7 @@ CombatConfig.ActiveScanInterval = 0.05
 -- AttackRange - глубина области удара перед персонажем (studs)
 -- HitboxWidth - ширина области удара (studs)
 -- MaxTargets - сколько целей может поразить одна атака
--- AnimationId - "rbxassetid://..." (nil = без анимации, пока нет ассетов)
+-- Анимации оружия задаются не здесь, а в CombatAnimationConfig.
 -- Необязательные переопределения для конкретного оружия (иначе берутся общие значения выше):
 --   RootRangeTolerance, MaxAttackAngle
 CombatConfig.Weapons = {
@@ -75,7 +75,6 @@ CombatConfig.Weapons = {
         AttackRange = 5,
         HitboxWidth = 4,
         MaxTargets = 5,
-        AnimationId = nil,
     },
 
     Sword = {
@@ -93,7 +92,6 @@ CombatConfig.Weapons = {
         AttackRange = 6,
         HitboxWidth = 5,
         MaxTargets = 5,
-        AnimationId = nil,
     },
 }
 

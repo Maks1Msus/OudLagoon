@@ -1,4 +1,5 @@
--- Управление боем на клиенте: только ввод, анимации и визуальные эффекты.
+-- Управление боем на клиенте: ввод и визуальная обратная связь (числа урона).
+-- Анимации вынесены в CombatAnimationController.
 -- Урон, цели, кулдаун и блок решает сервер. Клиент шлёт только намерения:
 --   CombatRequest("Attack"), CombatStateRequest("BlockStart" | "BlockEnd" | "Sync").
 --
@@ -80,41 +81,8 @@ local function getWeaponConfig()
     return CombatConfig.Weapons[CombatConfig.UnarmedId]
 end
 
-local tracks = setmetatable({}, { __mode = "k" }) -- [animator] = { [animationId] = track }
-
-local function playSwing(weapon)
-    local animationId = weapon.AnimationId
-
-    if not animationId then
-        return -- пока нет ассетов анимации
-    end
-
-    local humanoid = getHumanoid()
-    local animator = humanoid and humanoid:FindFirstChildOfClass("Animator")
-
-    if not animator then
-        return
-    end
-
-    local perAnimator = tracks[animator]
-
-    if not perAnimator then
-        perAnimator = {}
-        tracks[animator] = perAnimator
-    end
-
-    local track = perAnimator[animationId]
-
-    if not track then
-        local animation = Instance.new("Animation")
-        animation.AnimationId = animationId
-
-        track = animator:LoadAnimation(animation)
-        perAnimator[animationId] = track
-    end
-
-    track:Play()
-end
+-- Анимации здесь не проигрываются: их показывает CombatAnimationController
+-- после того, как сервер подтвердил атаку (иначе отклонённая атака выглядела бы успешной).
 
 -- АТАКА -----------------------------------------------------------------
 
@@ -146,7 +114,6 @@ local function tryAttack()
     nextAttackAt = now + math.max(weapon.Cooldown, swingDuration) + CLIENT_COOLDOWN_MARGIN
 
     CombatRequest:FireServer("Attack")
-    playSwing(weapon)
 end
 
 -- БЛОК ------------------------------------------------------------------
