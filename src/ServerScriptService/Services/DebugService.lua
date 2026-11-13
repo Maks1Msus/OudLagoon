@@ -66,8 +66,6 @@ end
 
 -- БОЕВЫЕ ТЕСТЫ -----------------------------------------------------------
 
-local MAX_DUMMIES = 5
-
 -- Очки характеристик для быстрой проверки влияния Strength на урон.
 function Actions.AddStatPoints(player, profile, amount)
     profile.StatPoints += math.floor(amount or 50)
@@ -107,64 +105,15 @@ end
 
 -- Неподвижный манекен с обычным Humanoid в 7 studs перед игроком.
 function Actions.SpawnDummy(player)
-    local character = player.Character
-    local root = character and character:FindFirstChild("HumanoidRootPart")
+    TrainingDummyService:SpawnForPlayer(player)
+end
 
-    if not root then
-        return
-    end
+function Actions.RemoveDummy()
+    TrainingDummyService:RemoveLast()
+end
 
-    local folder = workspace:FindFirstChild("DebugDummies")
-
-    if not folder then
-        folder = Instance.new("Folder")
-        folder.Name = "DebugDummies"
-        folder.Parent = workspace
-    end
-
-    local existing = folder:GetChildren()
-
-    if #existing >= MAX_DUMMIES then
-        existing[1]:Destroy()
-    end
-
-    -- Центр корня персонажа обычно на 3 studs выше пола; манекен высотой 5 studs
-    local forward = (root.CFrame * CFrame.new(0, 0, -7)).Position
-    local position = Vector3.new(forward.X, root.Position.Y - 0.5, forward.Z)
-    local lookAt = Vector3.new(root.Position.X, position.Y, root.Position.Z)
-    local bodyCFrame = CFrame.lookAt(position, lookAt)
-
-    local model = Instance.new("Model")
-    model.Name = "Training Dummy"
-
-    local body = Instance.new("Part")
-    body.Name = "HumanoidRootPart"
-    body.Size = Vector3.new(2, 5, 1)
-    body.Anchored = true
-    body.Color = Color3.fromRGB(180, 140, 90)
-    body.CFrame = bodyCFrame
-    body.Parent = model
-
-    local head = Instance.new("Part")
-    head.Name = "Head"
-    head.Size = Vector3.new(1.6, 1.6, 1.6)
-    head.Anchored = true
-    head.Color = Color3.fromRGB(200, 160, 110)
-    head.CFrame = bodyCFrame * CFrame.new(0, 3.3, 0)
-    head.Parent = model
-
-    local humanoid = Instance.new("Humanoid")
-    humanoid.DisplayName = "Training Dummy"
-    humanoid.MaxHealth = 100
-    humanoid.Health = 100
-    humanoid.Parent = model
-
-    model.PrimaryPart = body
-    model.Parent = folder
-
-    humanoid.Died:Connect(function()
-        Debris:AddItem(model, 2)
-    end)
+function Actions.RemoveAllDummies()
+    TrainingDummyService:RemoveAll()
 end
 
 function DebugService:Init()

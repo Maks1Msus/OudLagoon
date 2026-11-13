@@ -1,0 +1,152 @@
+{
+  "default.project.json": {
+    "mtime": 1794147849.6666038,
+    "seen": 1794578138.0020092,
+    "ast_hash": "8731c4d3fdd95e07880079c4196342fc",
+    "semantic_hash": "8731c4d3fdd95e07880079c4196342fc"
+  },
+  "src/ReplicatedStorage/Shared/Config/CombatAnimationConfig.lua": {
+    "mtime": 1794575000.7735002,
+    "seen": 1794578138.0020156,
+    "ast_hash": "7b69772a5702b0c7b82a1d1c607ed0c4",
+    "semantic_hash": "7b69772a5702b0c7b82a1d1c607ed0c4"
+  },
+  "src/ReplicatedStorage/Shared/Config/CombatConfig.lua": {
+    "mtime": 1794575161.9526782,
+    "seen": 1794578138.0020185,
+    "ast_hash": "6e0661753b6624ca5c1f6a26a0707be4",
+    "semantic_hash": "6e0661753b6624ca5c1f6a26a0707be4"
+  },
+  "src/ReplicatedStorage/Shared/Config/CombatStateConfig.lua": {
+    "mtime": 1794559971.5845857,
+    "seen": 1794578138.0020201,
+    "ast_hash": "b428317a104dd93ded944cd01abf1662",
+    "semantic_hash": "b428317a104dd93ded944cd01abf1662"
+  },
+  "src/ReplicatedStorage/Shared/Config/GameConfig.lua": {
+    "mtime": 1794202250.123231,
+    "seen": 1794578138.0020216,
+    "ast_hash": "06ddddd28711d3d9d5d50fa6e2ff8551",
+    "semantic_hash": "06ddddd28711d3d9d5d50fa6e2ff8551"
+  },
+  "src/ReplicatedStorage/Shared/Config/ProgressionConfig.lua": {
+    "mtime": 1794155886.0548494,
+    "seen": 1794578138.0020232,
+    "ast_hash": "b603af88480d453c39462fc38bec9925",
+    "semantic_hash": "b603af88480d453c39462fc38bec9925"
+  },
+  "src/ReplicatedStorage/Shared/Constants/CombatStates.lua": {
+    "mtime": 1794562806.5455139,
+    "seen": 1794578138.0020247,
+    "ast_hash": "32326df8bfaeca4868fa0de5064a1c15",
+    "semantic_hash": "32326df8bfaeca4868fa0de5064a1c15"
+  },
+  "src/ReplicatedStorage/Shared/Constants/GameConstants.lua": {
+    "mtime": 1794155904.6401682,
+    "seen": 1794578138.0020263,
+    "ast_hash": "e3a3e9fe0b58f9194daaf366c9502672",
+    "semantic_hash": "e3a3e9fe0b58f9194daaf366c9502672"
+  },
+  "src/ServerScriptService/Framework.server.lua": {
+    "mtime": 1794576011.5566266,
+    "seen": 1794578138.0020275,
+    "ast_hash": "a9e1c81f9a672518af7c63f52643165e",
+    "semantic_hash": "a9e1c81f9a672518af7c63f52643165e"
+  },
+  "src/ServerScriptService/Services/CharacterService.lua": {
+    "mtime": 1794155926.0002556,
+    "seen": 1794578138.0020294,
+    "ast_hash": "b7bf82210f73954a73d0fab11cfc0570",
+    "semantic_hash": "b7bf82210f73954a73d0fab11cfc0570"
+  },
+  "src/ServerScriptService/Services/CombatService.lua": {
+    "mtime": 1794562780.1523316,
+    "seen": 1794578138.0020308,
+    "ast_hash": "d6792e907ad2a1b1c1f764352b44ea98",
+    "semantic_hash": "d6792e907ad2a1b1c1f764352b44ea98"
+  },
+  "src/ServerScriptService/Services/CombatStateService.lua": {
+    "mtime": 1794562790.1562004,
+    "seen": 1794578138.002033,
+    "ast_hash": "e72a59864e8706924e7a5c4daf6767eb",
+    "semantic_hash": "e72a59864e8706924e7a5c4daf6767eb"
+  },
+  "src/ServerScriptService/Services/DataService.lua": {
+    "mtime": 1794155964.8179226,
+    "seen": 1794578138.0020344,
+    "ast_hash": "7e1072df123928fa3a838b404229f0ba",
+    "semantic_hash": "7e1072df123928fa3a838b404229f0ba"
+  },
+  "src/ServerScriptService/Services/DebugService.lua": {
+    "mtime": 1794575991.0360768,
+    "seen": 1794578138.0020356,
+    "ast_hash": "0c0ad6514b5173a798af2d02fa008b27",
+    "semantic_hash": "0c0ad6514b5173a798af2d02fa008b27"
+  },
+  "src/ServerScriptService/Services/PlayerService.lua": {
+    "mtime": 1794155941.4467273,
+    "seen": 1794578138.0020375,
+    "ast_hash": "db65a5dd4cc03b2dd393cf48bd32aece",
+    "semantic_hash": "db65a5dd4cc03b2dd393cf48bd32aece"
+  },
+  "src/ServerScriptService/Services/ProgressionService.lua": {
+    "mtime": 1794155934.2072265,
+    "seen": 1794578138.0020385,
+    "ast_hash": "33714ba597d20c00a65cb5916ee1f68c",
+    "semantic_hash": "33714ba597d20c00a65cb5916ee1f68c"
+  },
+  "src/ServerScriptService/Services/RemoteService.lua": {
+    "mtime": 1794562797.9265306,
+    "seen": 1794578138.0020401,
+    "ast_hash": "743b15eaddfb4860dafb130d756e5d9e",
+    "semantic_hash": "743b15eaddfb4860dafb130d756e5d9e"
+  },
+  "src/ServerScriptService/Services/TrainingDummyService.lua": {
+    "mtime": 1794575945.8359635,
+    "seen": 1794578138.0020416,
+    "ast_hash": "1ae59b3cd02d37dbd864a437e505591f",
+    "semantic_hash": "1ae59b3cd02d37dbd864a437e505591f"
+  },
+  "src/StarterPlayer/StarterPlayerScripts/CombatAnimationController.client.lua": {
+    "mtime": 1794574599.2069058,
+    "seen": 1794578138.0020428,
+    "ast_hash": "c2fa81cc6f72e79a1e66590b5efcbe98",
+    "semantic_hash": "c2fa81cc6f72e79a1e66590b5efcbe98"
+  },
+  "src/StarterPlayer/StarterPlayerScripts/CombatController.client.lua": {
+    "mtime": 1794570427.3658755,
+    "seen": 1794578138.0020442,
+    "ast_hash": "317319fbd36fec0f5749e79b78efda7d",
+    "semantic_hash": "317319fbd36fec0f5749e79b78efda7d"
+  },
+  "src/StarterPlayer/StarterPlayerScripts/Testui.client.lua": {
+    "mtime": 1794576045.5836809,
+    "seen": 1794578138.0020456,
+    "ast_hash": "4565d309941e068e4741fc341b1e8ace",
+    "semantic_hash": "4565d309941e068e4741fc341b1e8ace"
+  },
+  "src/client/init.client.luau": {
+    "mtime": 1794147438.683743,
+    "seen": 1794578138.0020473,
+    "ast_hash": "191895a8b92f1c43a986785c45eac8c2",
+    "semantic_hash": "191895a8b92f1c43a986785c45eac8c2"
+  },
+  "src/server/init.server.luau": {
+    "mtime": 1794147438.683743,
+    "seen": 1794578138.002049,
+    "ast_hash": "34fa2af04eb7a234bda16bd4ba2169f9",
+    "semantic_hash": "34fa2af04eb7a234bda16bd4ba2169f9"
+  },
+  "src/shared/Hello.luau": {
+    "mtime": 1794147438.6847417,
+    "seen": 1794578138.0020504,
+    "ast_hash": "83328d975731d2e1917c27a281aaa823",
+    "semantic_hash": "83328d975731d2e1917c27a281aaa823"
+  },
+  "README.md": {
+    "mtime": 1794147438.6810246,
+    "seen": 1794578138.0020516,
+    "ast_hash": "a75832f883bbc2e326f5cabd9610c593",
+    "semantic_hash": "a75832f883bbc2e326f5cabd9610c593"
+  }
+}

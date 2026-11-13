@@ -1,7 +1,7 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Services = script.Parent.Services
-
+local TrainingDummyService = require(Services.TrainingDummyService)
 local DataService = require(Services.DataService)
 local RemoteService = require(Services.RemoteService)
 local PlayerService = require(Services.PlayerService)
@@ -22,6 +22,8 @@ PlayerService:Init()
 ProgressionService:Init()
 CombatStateService:Init()
 CombatService:Init()
+CombatService:Init()
+TrainingDummyService:Init()
 DebugService:Init() -- активен только в Roblox Studio
 
 print("================================")
