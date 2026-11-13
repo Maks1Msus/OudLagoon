@@ -96,7 +96,7 @@ function Actions.GiveSword(player)
 
     local handle = Instance.new("Part")
     handle.Name = "Handle"
-    handle.Size = Vector3.new(0.4, 0.4, 4)
+    handle.Size = Vector3.new(0.4, 4, 0.4)
     handle.Color = Color3.fromRGB(190, 195, 205)
     handle.Material = Enum.Material.Metal
     handle.Massless = true
