@@ -324,18 +324,22 @@ function CombatService:RunActiveWindow(attack)
                     root.Position
                 )
 
-                -- Подтверждение попадания только атакующему-игроку (числа урона, эффекты).
                 -- Damage - сколько урона реально нанесено, Result - Hit | Blocked | Parried.
-                if player and outcome.Result ~= CombatStates.DamageResults.Ignored then
-                    feedback:FireClient(player, {
-                        Kind = "Hit",
-                        Target = target.Model,
-                        Damage = outcome.Damage,
-                        Result = outcome.Result,
-                    })
+                -- Условие не зависит от того, кто бьёт: событие защищающемуся игроку нужно
+                -- и тогда, когда атакует NPC (player == nil).
+                if outcome.Result ~= CombatStates.DamageResults.Ignored then
+                    -- Атакующему-игроку: числа урона, эффекты. У NPC получателя нет.
+                    if player then
+                        feedback:FireClient(player, {
+                            Kind = "Hit",
+                            Target = target.Model,
+                            Damage = outcome.Damage,
+                            Result = outcome.Result,
+                        })
+                    end
 
                     -- Результат удара защищающемуся игроку: по нему клиент проигрывает
-                    -- реакции (Parry, BlockHit, Hit). У NPC владельца нет, ему ничего не шлём.
+                    -- реакции (Parry, BlockHit, Hit). Если защищается NPC, получателя нет.
                     local victim = Players:GetPlayerFromCharacter(target.Model)
 
                     if victim then
