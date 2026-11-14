@@ -167,6 +167,15 @@ end
 
 local StateChanged = CreateSignal()
 local AttackPhaseChanged = CreateSignal()
+local DamageApplied = CreateSignal()
+
+-- callback(character, outcome, sourcePosition): outcome - результат ApplyDamage
+-- ({ Result, Damage, Absorbed }). Вызывается для всех исходов, кроме Ignored.
+-- Так сервисы (например, анимации NPC) реагируют на удары, не зная о CombatService.
+-- Возвращает функцию отписки.
+function CombatStateService:OnDamageApplied(callback)
+    return DamageApplied.Connect(callback)
+end
 
 -- callback(character, newState, oldState, transitionId). Возвращает функцию отписки.
 function CombatStateService:OnStateChanged(callback)
@@ -616,7 +625,11 @@ function CombatStateService:ApplyDamage(character, damage, sourcePosition)
 
     Log(character.Name, "damage", damage, "->", applied, result)
 
-    return Outcome(result, applied)
+    local outcome = Outcome(result, applied)
+
+    DamageApplied.Fire(character, outcome, sourcePosition)
+
+    return outcome
 end
 
 -- Dead: абсолютный приоритет, прерывает всё. Выход только через ResetCharacter.

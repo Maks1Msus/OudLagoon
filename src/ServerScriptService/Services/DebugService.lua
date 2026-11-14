@@ -5,7 +5,7 @@ local Debris = game:GetService("Debris")
 local CombatConfig = require(
     ReplicatedStorage.Shared.Config.CombatConfig
 )
-
+local TrainingDummyService = require(script.Parent.TrainingDummyService)
 local DataService = require(script.Parent.DataService)
 local RemoteService = require(script.Parent.RemoteService)
 local PlayerService = require(script.Parent.PlayerService)
@@ -105,7 +105,17 @@ end
 
 -- Неподвижный манекен с обычным Humanoid в 7 studs перед игроком.
 function Actions.SpawnDummy(player)
-    TrainingDummyService:SpawnForPlayer(player)
+    TrainingDummyService:SpawnForPlayer(player, "Passive")
+end
+
+-- Манекен, который периодически поднимает блок (проверка блока и парирования).
+function Actions.SpawnBlockingDummy(player)
+    TrainingDummyService:SpawnForPlayer(player, "Blocking")
+end
+
+-- Манекен, который сам атакует игрока, подошедшего на дистанцию удара.
+function Actions.SpawnAggressiveDummy(player)
+    TrainingDummyService:SpawnForPlayer(player, "Aggressive")
 end
 
 function Actions.RemoveDummy()

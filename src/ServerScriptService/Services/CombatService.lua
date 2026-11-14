@@ -19,11 +19,12 @@ local CombatStateService = require(script.Parent.CombatStateService)
 
 local CombatService = {}
 
--- [player] = момент времени (os.clock), раньше которого следующая атака запрещена
-local NextAttackAt = {}
+-- [player или character NPC] = момент времени (os.clock), раньше которого следующая атака
+-- запрещена. Ключ - Player для игрока и Model для NPC; слабые ключи не копят удалённых NPC.
+local NextAttackAt = setmetatable({}, { __mode = "k" })
 
 -- [character] = данные текущего удара, пока он не завершился:
--- { AttackId, Player, Character, WeaponId, Weapon }
+-- { AttackId, Player (nil у NPC), Character, WeaponId, Weapon, Strength (только NPC) }
 local Attacks = setmetatable({}, { __mode = "k" })
 
 local function Log(...)
@@ -66,14 +67,15 @@ end
 -- Если атака разрешена, фиксирует следующее допустимое время и возвращает true.
 -- Время следующей атаки считается от запланированного момента (а не от прихода запроса),
 -- поэтому допуск на сетевые задержки не позволяет атаковать быстрее положенного.
-function CombatService:TryStartCooldown(player, cooldown, now)
-    local nextAllowed = NextAttackAt[player] or 0
+-- owner - Player (игрок) либо Model (NPC): кулдаун у каждого свой.
+function CombatService:TryStartCooldown(owner, cooldown, now)
+    local nextAllowed = NextAttackAt[owner] or 0
 
     if now < nextAllowed - CombatConfig.CooldownTolerance then
         return false
     end
 
-    NextAttackAt[player] = math.max(now, nextAllowed) + cooldown
+    NextAttackAt[owner] = math.max(now, nextAllowed) + cooldown
 
     return true
 end
@@ -162,8 +164,14 @@ local function FindHumanoidModel(part)
     return nil, nil
 end
 
+-- attacker - Player, либо nil, если бьёт NPC.
 local function IsPvPAllowed(attacker, model)
     local targetPlayer = Players:GetPlayerFromCharacter(model)
+
+    -- NPC бьёт только игроков (не других NPC и манекены); настройка PvP его не касается
+    if attacker == nil then
+        return targetPlayer ~= nil
+    end
 
     if not targetPlayer then
         return true
@@ -174,6 +182,7 @@ end
 
 -- Область удара определяется сервером по положению и направлению персонажа.
 -- Клиент не присылает ни цели, ни координаты.
+-- attacker - Player атакующего либо nil, если бьёт NPC (character всё равно передаётся).
 -- Кандидат должен пройти по порядку: жив -> корень в пределах дальности и угла ->
 -- PvP разрешён.
 -- options (необязательно) нужны окну попаданий Active, где область проверяется много раз:
@@ -249,18 +258,25 @@ end
 -- Фазы, прерывание и устаревшие таймеры контролирует CombatStateService: как только удар
 -- перестаёт быть активным (оглушение, смерть, конец фазы), цикл завершается.
 function CombatService:RunActiveWindow(attack)
-    local player = attack.Player
+    local player = attack.Player -- nil, если бьёт NPC
     local character = attack.Character
     local weapon = attack.Weapon
     local attackId = attack.AttackId
 
-    local profile = DataService:GetProfile(player)
+    local ownerName = player and player.Name or character.Name
 
-    if not profile then
-        return
+    -- Сила игрока берётся из профиля, сила NPC задаётся при запуске удара
+    local strength = attack.Strength
+
+    if player then
+        local profile = DataService:GetProfile(player)
+
+        if not profile then
+            return
+        end
+
+        strength = profile.Stats.Strength
     end
-
-    local strength = profile.Stats.Strength
 
     if type(strength) ~= "number" then
         strength = GameConstants.BaseStatValue
@@ -308,22 +324,34 @@ function CombatService:RunActiveWindow(attack)
                     root.Position
                 )
 
-                -- Подтверждение попадания только атакующему (числа урона, эффекты).
+                -- Подтверждение попадания только атакующему-игроку (числа урона, эффекты).
                 -- Damage - сколько урона реально нанесено, Result - Hit | Blocked | Parried.
-                if outcome.Result ~= CombatStates.DamageResults.Ignored then
+                if player and outcome.Result ~= CombatStates.DamageResults.Ignored then
                     feedback:FireClient(player, {
                         Kind = "Hit",
                         Target = target.Model,
                         Damage = outcome.Damage,
                         Result = outcome.Result,
                     })
+
+                    -- Результат удара защищающемуся игроку: по нему клиент проигрывает
+                    -- реакции (Parry, BlockHit, Hit). У NPC владельца нет, ему ничего не шлём.
+                    local victim = Players:GetPlayerFromCharacter(target.Model)
+
+                    if victim then
+                        feedback:FireClient(victim, {
+                            Kind = "Received",
+                            Damage = outcome.Damage,
+                            Result = outcome.Result,
+                        })
+                    end
                 end
             end
         end
 
         if #targets > 0 or stats.Candidates > 0 then
             Log(
-                player.Name,
+                ownerName,
                 "scan",
                 scans,
                 "| hit",
@@ -340,20 +368,15 @@ function CombatService:RunActiveWindow(attack)
         task.wait(CombatConfig.ActiveScanInterval)
     end
 
-    Log(player.Name, "attack", attackId, "window closed | hits", hits, "| scans", scans)
+    Log(ownerName, "attack", attackId, "window closed | hits", hits, "| scans", scans)
 end
 
--- Запускает удар. Урон здесь НЕ наносится: он регистрируется в фазе Active
--- (см. RunActiveWindow). Единый алгоритм для атаки без оружия и с оружием.
+-- Общий запуск удара для игроков и NPC. Урон здесь НЕ наносится: он регистрируется
+-- в фазе Active (см. RunActiveWindow). Единый алгоритм для атаки без оружия и с оружием.
+-- owner    - Player либо nil (NPC);
+-- strength - сила атакующего, нужна только NPC (у игрока берётся из профиля).
 -- Возвращает true, <AttackId> либо false, <причина>.
-function CombatService:PerformAttack(player)
-    local profile = DataService:GetProfile(player)
-
-    if not profile then
-        return false, "NoProfile"
-    end
-
-    local character = player.Character
+local function BeginAttack(self, character, owner, strength)
     local humanoid = character and character:FindFirstChildOfClass("Humanoid")
     local root = character and character:FindFirstChild("HumanoidRootPart")
 
@@ -372,7 +395,7 @@ function CombatService:PerformAttack(player)
     local weaponId, weapon = self:GetWeapon(character)
 
     -- Кулдаун оружия не зависит от длительности самого удара
-    if not self:TryStartCooldown(player, weapon.Cooldown, os.clock()) then
+    if not self:TryStartCooldown(owner or character, weapon.Cooldown, os.clock()) then
         return false, "Cooldown"
     end
 
@@ -386,15 +409,43 @@ function CombatService:PerformAttack(player)
 
     Attacks[character] = {
         AttackId = attackId,
-        Player = player,
+        Player = owner,
         Character = character,
         WeaponId = weaponId,
         Weapon = weapon,
+        Strength = strength,
     }
 
-    Log(player.Name, "attack", attackId, weaponId, "started")
+    Log(owner and owner.Name or character.Name, "attack", attackId, weaponId, "started")
 
     return true, attackId
+end
+
+-- Атака игрока по запросу клиента.
+function CombatService:PerformAttack(player)
+    local profile = DataService:GetProfile(player)
+
+    if not profile then
+        return false, "NoProfile"
+    end
+
+    return BeginAttack(self, player.Character, player, nil)
+end
+
+-- Атака NPC (вызывается только сервером, например поведением манекена).
+-- Использует тот же путь, что и игрок: проверку состояния, кулдаун, область удара,
+-- лимит целей и ApplyDamage. options.Strength - сила NPC (влияет на урон так же, как у игрока).
+-- Бить NPC может только по игрокам (см. IsPvPAllowed).
+function CombatService:PerformNPCAttack(character, options)
+    if typeof(character) ~= "Instance" or not character:IsA("Model") then
+        return false, "InvalidCharacter"
+    end
+
+    if Players:GetPlayerFromCharacter(character) then
+        return false, "NotNPC" -- игроки атакуют только через запрос клиента
+    end
+
+    return BeginAttack(self, character, nil, options and options.Strength)
 end
 
 -- СОСТОЯНИЕ И БЛОК (СЕТЬ) -----------------------------------------------

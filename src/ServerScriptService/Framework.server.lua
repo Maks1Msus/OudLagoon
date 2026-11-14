@@ -11,6 +11,7 @@ local ProgressionService = require(
 )
 local CombatStateService = require(Services.CombatStateService)
 local CombatService = require(Services.CombatService)
+local NPCCombatAnimationService = require(Services.NPCCombatAnimationService)
 
 local GameConfig = require(
     ReplicatedStorage.Shared.Config.GameConfig
@@ -22,7 +23,7 @@ PlayerService:Init()
 ProgressionService:Init()
 CombatStateService:Init()
 CombatService:Init()
-CombatService:Init()
+NPCCombatAnimationService:Init()
 TrainingDummyService:Init()
 DebugService:Init() -- активен только в Roblox Studio
 
