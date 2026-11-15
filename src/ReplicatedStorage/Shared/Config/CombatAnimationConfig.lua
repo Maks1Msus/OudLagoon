@@ -43,7 +43,7 @@ CombatAnimationConfig.Slots = {
 -- иначе берётся Common.
 CombatAnimationConfig.Weapons = {
     Unarmed = {
-        Attack = "rbxassetid://79612955840976",
+        Attack = "rbxassetid://71788438859538",
     },
 
     Sword = {
