@@ -17,6 +17,10 @@ local CombatStates = require(
     ReplicatedStorage.Shared.Constants.CombatStates
 )
 
+local WeaponRegistry = require(
+    ReplicatedStorage.Shared.Weapons.WeaponRegistry
+)
+
 local DataService = require(script.Parent.DataService)
 local RemoteService = require(script.Parent.RemoteService)
 local CombatStateService = require(script.Parent.CombatStateService)
@@ -73,21 +77,11 @@ end
 
 -- ОРУЖИЕ ----------------------------------------------------------------
 
--- Оружие определяется сервером по экипированному Tool с атрибутом CombatWeaponId.
--- Неизвестный или отсутствующий id означает бой без оружия.
+-- Оружие определяется сервером по экипированному Tool с атрибутом CombatWeaponId
+-- (см. WeaponRegistry). Неизвестный или отсутствующий id означает бой без оружия.
+-- Возвращает weaponId, weapon.
 function CombatService:GetWeapon(character)
-    local tool = character:FindFirstChildOfClass("Tool")
-
-    if tool then
-        local weaponId = tool:GetAttribute(CombatConfig.WeaponAttribute)
-        local weapon = type(weaponId) == "string" and CombatConfig.Weapons[weaponId]
-
-        if weapon then
-            return weaponId, weapon
-        end
-    end
-
-    return CombatConfig.UnarmedId, CombatConfig.Weapons[CombatConfig.UnarmedId]
+    return WeaponRegistry.ResolveFromCharacter(character)
 end
 
 -- УРОН ------------------------------------------------------------------
@@ -567,12 +561,7 @@ end
 
 function CombatService:Init()
     -- Ошибка конфигурации должна проявиться при запуске, а не в бою
-    for weaponId, weapon in pairs(CombatConfig.Weapons) do
-        assert(
-            type(weapon.AttackTiming) == "table",
-            "[CombatService] Weapon '" .. tostring(weaponId) .. "' has no AttackTiming"
-        )
-    end
+    WeaponRegistry.Validate()
 
     Players.PlayerRemoving:Connect(function(player)
         NextAttackAt[player] = nil

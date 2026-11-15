@@ -57,11 +57,15 @@ CombatConfig.ActiveScanInterval = 0.05
 -- HitboxWidth - ширина области удара (studs)
 -- MaxTargets - сколько целей может поразить одна атака
 -- Анимации оружия задаются не здесь, а в CombatAnimationConfig.
+-- Equippable - можно ли выдать оружие как предмет (Tool). У Unarmed false: это боевой набор.
+-- Handle     - внешний вид Tool у Equippable-оружия: Size (обязателен), Color, Material.
+--   Tool создаёт WeaponService, реестр и проверки лежат в WeaponRegistry.
 -- Необязательные переопределения для конкретного оружия (иначе берутся общие значения выше):
 --   RootRangeTolerance, MaxAttackAngle
 CombatConfig.Weapons = {
     Unarmed = {
         DisplayName = "Fists",
+        Equippable = false, -- бой без оружия: не предмет, в рюкзак не выдаётся
         BaseDamage = 5,
         Scaling = 0.5,
         Cooldown = 0.8,
@@ -80,6 +84,12 @@ CombatConfig.Weapons = {
 
     Sword = {
         DisplayName = "Sword",
+        Equippable = true,
+        Handle = {
+            Size = Vector3.new(0.4, 4, 0.4),
+            Color = Color3.fromRGB(190, 195, 205),
+            Material = Enum.Material.Metal,
+        },
         BaseDamage = 15,
         Scaling = 0.8,
         Cooldown = 1.0,

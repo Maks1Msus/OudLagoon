@@ -42,6 +42,7 @@ local Shared = ReplicatedStorage:WaitForChild("Shared")
 local CombatConfig = require(Shared:WaitForChild("Config"):WaitForChild("CombatConfig"))
 local CombatAnimationConfig = require(Shared:WaitForChild("Config"):WaitForChild("CombatAnimationConfig"))
 local CombatStates = require(Shared:WaitForChild("Constants"):WaitForChild("CombatStates"))
+local WeaponRegistry = require(Shared:WaitForChild("Weapons"):WaitForChild("WeaponRegistry"))
 
 local Events = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("Events")
 local CombatStateChanged = Events:WaitForChild("CombatStateChanged")
@@ -98,21 +99,10 @@ local function debugLog(...)
     end
 end
 
--- Оружие определяем так же, как CombatController: по атрибуту экипированного Tool.
+-- Оружие определяем через WeaponRegistry, как сервер и CombatController.
 -- Для выбора анимации достаточно; урон и таймингами всё равно занимается сервер.
 local function getWeaponId()
-    local character = player.Character
-    local tool = character and character:FindFirstChildOfClass("Tool")
-
-    if tool then
-        local weaponId = tool:GetAttribute(CombatConfig.WeaponAttribute)
-
-        if type(weaponId) == "string" and CombatConfig.Weapons[weaponId] then
-            return weaponId
-        end
-    end
-
-    return CombatConfig.UnarmedId
+    return (WeaponRegistry.ResolveFromCharacter(player.Character))
 end
 
 local function hasAnimation(slot, weaponId)

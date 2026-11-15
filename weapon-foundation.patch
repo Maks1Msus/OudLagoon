@@ -1,0 +1,517 @@
+diff --git a/src/ReplicatedStorage/Shared/Config/CombatConfig.lua b/src/ReplicatedStorage/Shared/Config/CombatConfig.lua
+index 898308e..eef2337 100644
+--- a/src/ReplicatedStorage/Shared/Config/CombatConfig.lua
++++ b/src/ReplicatedStorage/Shared/Config/CombatConfig.lua
+@@ -57,11 +57,15 @@ CombatConfig.ActiveScanInterval = 0.05
+ -- HitboxWidth - ширина области удара (studs)
+ -- MaxTargets - сколько целей может поразить одна атака
+ -- Анимации оружия задаются не здесь, а в CombatAnimationConfig.
++-- Equippable - можно ли выдать оружие как предмет (Tool). У Unarmed false: это боевой набор.
++-- Handle     - внешний вид Tool у Equippable-оружия: Size (обязателен), Color, Material.
++--   Tool создаёт WeaponService, реестр и проверки лежат в WeaponRegistry.
+ -- Необязательные переопределения для конкретного оружия (иначе берутся общие значения выше):
+ --   RootRangeTolerance, MaxAttackAngle
+ CombatConfig.Weapons = {
+     Unarmed = {
+         DisplayName = "Fists",
++        Equippable = false, -- бой без оружия: не предмет, в рюкзак не выдаётся
+         BaseDamage = 5,
+         Scaling = 0.5,
+         Cooldown = 0.8,
+@@ -80,6 +84,12 @@ CombatConfig.Weapons = {
+ 
+     Sword = {
+         DisplayName = "Sword",
++        Equippable = true,
++        Handle = {
++            Size = Vector3.new(0.4, 4, 0.4),
++            Color = Color3.fromRGB(190, 195, 205),
++            Material = Enum.Material.Metal,
++        },
+         BaseDamage = 15,
+         Scaling = 0.8,
+         Cooldown = 1.0,
+diff --git a/src/ReplicatedStorage/Shared/Weapons/WeaponRegistry.lua b/src/ReplicatedStorage/Shared/Weapons/WeaponRegistry.lua
+new file mode 100644
+index 0000000..650e5b8
+--- /dev/null
++++ b/src/ReplicatedStorage/Shared/Weapons/WeaponRegistry.lua
+@@ -0,0 +1,112 @@
++-- WeaponRegistry: единая точка доступа к описаниям оружия (CombatConfig.Weapons).
++-- Общий модуль для сервера и клиента. Боевая система не знает особенностей конкретного
++-- оружия: она получает его параметры отсюда, а определение "какое оружие у персонажа"
++-- живёт ТОЛЬКО здесь (раньше этот код был скопирован в нескольких местах).
++--
++-- Оружие персонажа - экипированный Tool с атрибутом CombatWeaponId (ставит только сервер,
++-- см. WeaponService). Нет Tool, либо у Tool неизвестный id: бой без оружия (Unarmed).
++-- Unarmed - боевой набор, а не предмет: Equippable = false, в рюкзак не выдаётся.
++
++local CombatConfig = require(script.Parent.Parent.Config.CombatConfig)
++
++local WeaponRegistry = {}
++
++-- Описание оружия по id либо nil.
++function WeaponRegistry.Get(weaponId)
++    if type(weaponId) ~= "string" then
++        return nil
++    end
++
++    return CombatConfig.Weapons[weaponId]
++end
++
++function WeaponRegistry.GetUnarmedId()
++    return CombatConfig.UnarmedId
++end
++
++-- Можно ли выдать это оружие как предмет (Tool).
++function WeaponRegistry.IsEquippable(weaponId)
++    local weapon = WeaponRegistry.Get(weaponId)
++
++    return weapon ~= nil and weapon.Equippable == true
++end
++
++-- Отсортированный список id оружия, которое можно выдать (для тестов и меню).
++function WeaponRegistry.GetEquippableIds()
++    local ids = {}
++
++    for weaponId, weapon in pairs(CombatConfig.Weapons) do
++        if weapon.Equippable == true then
++            table.insert(ids, weaponId)
++        end
++    end
++
++    table.sort(ids)
++
++    return ids
++end
++
++-- Оружие по Tool: id берётся из атрибута CombatWeaponId.
++-- Возвращает weaponId, weapon либо nil, nil (не Tool, нет атрибута, неизвестный id).
++function WeaponRegistry.ResolveFromTool(tool)
++    if typeof(tool) ~= "Instance" or not tool:IsA("Tool") then
++        return nil, nil
++    end
++
++    local weaponId = tool:GetAttribute(CombatConfig.WeaponAttribute)
++    local weapon = WeaponRegistry.Get(weaponId)
++
++    if weapon then
++        return weaponId, weapon
++    end
++
++    return nil, nil
++end
++
++-- Оружие персонажа: экипированный Tool с известным id, иначе Unarmed.
++-- Всегда возвращает weaponId, weapon.
++function WeaponRegistry.ResolveFromCharacter(character)
++    local tool = character and character:FindFirstChildOfClass("Tool")
++    local weaponId, weapon = WeaponRegistry.ResolveFromTool(tool)
++
++    if weapon then
++        return weaponId, weapon
++    end
++
++    local unarmedId = CombatConfig.UnarmedId
++
++    return unarmedId, CombatConfig.Weapons[unarmedId]
++end
++
++-- Ошибка конфигурации должна проявиться при запуске, а не в бою.
++function WeaponRegistry.Validate()
++    local unarmedId = CombatConfig.UnarmedId
++
++    assert(
++        type(CombatConfig.Weapons[unarmedId]) == "table",
++        "[WeaponRegistry] Unarmed weapon '" .. tostring(unarmedId) .. "' is not defined"
++    )
++
++    for weaponId, weapon in pairs(CombatConfig.Weapons) do
++        local name = tostring(weaponId)
++
++        assert(
++            type(weapon.AttackTiming) == "table",
++            "[WeaponRegistry] Weapon '" .. name .. "' has no AttackTiming"
++        )
++
++        if weapon.Equippable == true then
++            assert(
++                weaponId ~= unarmedId,
++                "[WeaponRegistry] Weapon '" .. name .. "' is Unarmed and cannot be Equippable"
++            )
++
++            assert(
++                type(weapon.Handle) == "table" and typeof(weapon.Handle.Size) == "Vector3",
++                "[WeaponRegistry] Equippable weapon '" .. name .. "' needs Handle.Size (Vector3)"
++            )
++        end
++    end
++end
++
++return WeaponRegistry
+diff --git a/src/ServerScriptService/Services/CombatService.lua b/src/ServerScriptService/Services/CombatService.lua
+index b625408..c75806a 100644
+--- a/src/ServerScriptService/Services/CombatService.lua
++++ b/src/ServerScriptService/Services/CombatService.lua
+@@ -17,6 +17,10 @@ local CombatStates = require(
+     ReplicatedStorage.Shared.Constants.CombatStates
+ )
+ 
++local WeaponRegistry = require(
++    ReplicatedStorage.Shared.Weapons.WeaponRegistry
++)
++
+ local DataService = require(script.Parent.DataService)
+ local RemoteService = require(script.Parent.RemoteService)
+ local CombatStateService = require(script.Parent.CombatStateService)
+@@ -73,21 +77,11 @@ end
+ 
+ -- ОРУЖИЕ ----------------------------------------------------------------
+ 
+--- Оружие определяется сервером по экипированному Tool с атрибутом CombatWeaponId.
+--- Неизвестный или отсутствующий id означает бой без оружия.
++-- Оружие определяется сервером по экипированному Tool с атрибутом CombatWeaponId
++-- (см. WeaponRegistry). Неизвестный или отсутствующий id означает бой без оружия.
++-- Возвращает weaponId, weapon.
+ function CombatService:GetWeapon(character)
+-    local tool = character:FindFirstChildOfClass("Tool")
+-
+-    if tool then
+-        local weaponId = tool:GetAttribute(CombatConfig.WeaponAttribute)
+-        local weapon = type(weaponId) == "string" and CombatConfig.Weapons[weaponId]
+-
+-        if weapon then
+-            return weaponId, weapon
+-        end
+-    end
+-
+-    return CombatConfig.UnarmedId, CombatConfig.Weapons[CombatConfig.UnarmedId]
++    return WeaponRegistry.ResolveFromCharacter(character)
+ end
+ 
+ -- УРОН ------------------------------------------------------------------
+@@ -567,12 +561,7 @@ end
+ 
+ function CombatService:Init()
+     -- Ошибка конфигурации должна проявиться при запуске, а не в бою
+-    for weaponId, weapon in pairs(CombatConfig.Weapons) do
+-        assert(
+-            type(weapon.AttackTiming) == "table",
+-            "[CombatService] Weapon '" .. tostring(weaponId) .. "' has no AttackTiming"
+-        )
+-    end
++    WeaponRegistry.Validate()
+ 
+     Players.PlayerRemoving:Connect(function(player)
+         NextAttackAt[player] = nil
+diff --git a/src/ServerScriptService/Services/DebugService.lua b/src/ServerScriptService/Services/DebugService.lua
+index 5e6c05d..f0c1859 100644
+--- a/src/ServerScriptService/Services/DebugService.lua
++++ b/src/ServerScriptService/Services/DebugService.lua
+@@ -1,11 +1,8 @@
+ local RunService = game:GetService("RunService")
+-local ReplicatedStorage = game:GetService("ReplicatedStorage")
+ local Debris = game:GetService("Debris")
+ 
+-local CombatConfig = require(
+-    ReplicatedStorage.Shared.Config.CombatConfig
+-)
+ local TrainingDummyService = require(script.Parent.TrainingDummyService)
++local WeaponService = require(script.Parent.WeaponService)
+ local CombatService = require(script.Parent.CombatService)
+ local DataService = require(script.Parent.DataService)
+ local RemoteService = require(script.Parent.RemoteService)
+@@ -75,33 +72,15 @@ function Actions.AddStatPoints(player, profile, amount)
+     PlayerService:PushProfile(player)
+ end
+ 
+--- Тестовый меч. Оружие распознаётся по атрибуту CombatWeaponId, который ставит сервер.
++-- Тестовый меч. Предмет создаёт WeaponService: оружие распознаётся по атрибуту
++-- CombatWeaponId, который ставит сервер.
+ function Actions.GiveSword(player)
+-    local backpack = player:FindFirstChildOfClass("Backpack")
+-    local character = player.Character
+-
+-    if not backpack then
+-        return
+-    end
+-
+-    if backpack:FindFirstChild("Sword") or (character and character:FindFirstChild("Sword")) then
+-        return
+-    end
+-
+-    local tool = Instance.new("Tool")
+-    tool.Name = "Sword"
+-    tool.CanBeDropped = false
+-    tool:SetAttribute(CombatConfig.WeaponAttribute, "Sword")
+-
+-    local handle = Instance.new("Part")
+-    handle.Name = "Handle"
+-    handle.Size = Vector3.new(0.4, 4, 0.4)
+-    handle.Color = Color3.fromRGB(190, 195, 205)
+-    handle.Material = Enum.Material.Metal
+-    handle.Massless = true
+-    handle.Parent = tool
++    WeaponService:Give(player, "Sword")
++end
+ 
+-    tool.Parent = backpack
++-- Убирает всё выданное оружие, в том числе из рук: бой без оружия.
++function Actions.RemoveWeapons(player)
++    WeaponService:RemoveAll(player)
+ end
+ 
+ -- Неподвижный манекен с обычным Humanoid в 7 studs перед игроком.
+diff --git a/src/ServerScriptService/Services/WeaponService.lua b/src/ServerScriptService/Services/WeaponService.lua
+new file mode 100644
+index 0000000..93d0ac6
+--- /dev/null
++++ b/src/ServerScriptService/Services/WeaponService.lua
+@@ -0,0 +1,172 @@
++-- WeaponService: выдача, экипировка и снятие оружия (серверная часть).
++-- Оружие игрока - Tool с атрибутом CombatWeaponId. Атрибут ставит только сервер:
++-- клиент не может создать Tool или изменить атрибут так, чтобы это увидел сервер.
++-- Характеристики берутся из CombatConfig.Weapons через WeaponRegistry; боевую логику
++-- (удары, урон, состояния) сервис не знает и не трогает.
++--
++-- Встроенная панель предметов Roblox по-прежнему позволяет игроку самому брать Tool из
++-- рюкзака и убирать обратно. Это безопасно: сервер определяет оружие по экипированному
++-- Tool (WeaponRegistry.ResolveFromCharacter), а удар запоминает оружие в момент начала.
++--
++-- Пока нет инвентаря, выданное оружие живёт столько же, сколько рюкзак (пропадает при
++-- респавне). Сервис не хранит состояния и Init не требует.
++
++local ReplicatedStorage = game:GetService("ReplicatedStorage")
++
++local CombatConfig = require(ReplicatedStorage.Shared.Config.CombatConfig)
++local WeaponRegistry = require(ReplicatedStorage.Shared.Weapons.WeaponRegistry)
++
++local WeaponService = {}
++
++local DEFAULT_HANDLE_COLOR = Color3.fromRGB(190, 195, 205)
++
++local function GetBackpack(player)
++    return player:FindFirstChildOfClass("Backpack")
++end
++
++local function GetHumanoid(player)
++    local character = player.Character
++
++    return character and character:FindFirstChildOfClass("Humanoid")
++end
++
++-- Добавляет в found Tool из container, у которых известный id оружия (и он равен weaponId,
++-- если weaponId задан).
++local function CollectTools(container, weaponId, found)
++    if not container then
++        return
++    end
++
++    for _, child in ipairs(container:GetChildren()) do
++        local toolWeaponId = WeaponRegistry.ResolveFromTool(child)
++
++        if toolWeaponId and (weaponId == nil or toolWeaponId == weaponId) then
++            table.insert(found, child)
++        end
++    end
++end
++
++-- Все Tool игрока с этим оружием (рюкзак и экипированные). weaponId = nil: любое оружие.
++local function FindTools(player, weaponId)
++    local found = {}
++
++    CollectTools(GetBackpack(player), weaponId, found)
++    CollectTools(player.Character, weaponId, found)
++
++    return found
++end
++
++local function CreateTool(weaponId, weapon)
++    local tool = Instance.new("Tool")
++    tool.Name = weapon.DisplayName or weaponId
++    tool.CanBeDropped = false
++    tool:SetAttribute(CombatConfig.WeaponAttribute, weaponId)
++
++    -- Временная модель: рукоять по размерам из конфига, до появления настоящих моделей
++    local handleConfig = weapon.Handle
++
++    local handle = Instance.new("Part")
++    handle.Name = "Handle"
++    handle.Size = handleConfig.Size
++    handle.Color = handleConfig.Color or DEFAULT_HANDLE_COLOR
++    handle.Material = handleConfig.Material or Enum.Material.Metal
++    handle.Massless = true
++    handle.Parent = tool
++
++    return tool
++end
++
++-- Выдаёт оружие в рюкзак. Одно оружие каждого вида на игрока.
++-- Возвращает Tool либо nil, <причина>:
++-- "UnknownWeapon" | "NotEquippable" | "NoBackpack" | "AlreadyHave".
++function WeaponService:Give(player, weaponId)
++    local weapon = WeaponRegistry.Get(weaponId)
++
++    if not weapon then
++        return nil, "UnknownWeapon"
++    end
++
++    if not WeaponRegistry.IsEquippable(weaponId) then
++        return nil, "NotEquippable"
++    end
++
++    local backpack = GetBackpack(player)
++
++    if not backpack then
++        return nil, "NoBackpack"
++    end
++
++    if #FindTools(player, weaponId) > 0 then
++        return nil, "AlreadyHave"
++    end
++
++    local tool = CreateTool(weaponId, weapon)
++    tool.Parent = backpack
++
++    return tool
++end
++
++-- Есть ли у игрока это оружие (в рюкзаке или в руках).
++function WeaponService:Has(player, weaponId)
++    return #FindTools(player, weaponId) > 0
++end
++
++-- Берёт в руки оружие, которое уже есть у игрока (смена оружия: прежнее уходит в рюкзак).
++-- Возвращает true либо false, "CharacterUnavailable" | "NotOwned".
++function WeaponService:Equip(player, weaponId)
++    local humanoid = GetHumanoid(player)
++
++    if not humanoid or humanoid.Health <= 0 then
++        return false, "CharacterUnavailable"
++    end
++
++    local tool = FindTools(player, weaponId)[1]
++
++    if not tool then
++        return false, "NotOwned"
++    end
++
++    if tool.Parent ~= player.Character then
++        humanoid:EquipTool(tool)
++    end
++
++    return true
++end
++
++-- Убирает оружие из рук в рюкзак: бой без оружия.
++function WeaponService:Unequip(player)
++    local humanoid = GetHumanoid(player)
++
++    if not humanoid then
++        return false, "CharacterUnavailable"
++    end
++
++    humanoid:UnequipTools()
++
++    return true
++end
++
++-- Удаляет оружие игрока: указанное weaponId либо всё, если weaponId = nil.
++-- Возвращает, сколько предметов удалено. Если удалено оружие в руках, персонаж
++-- автоматически переходит к бою без оружия.
++function WeaponService:Remove(player, weaponId)
++    local removed = 0
++
++    for _, tool in ipairs(FindTools(player, weaponId)) do
++        tool:Destroy()
++        removed += 1
++    end
++
++    return removed
++end
++
++function WeaponService:RemoveAll(player)
++    return self:Remove(player, nil)
++end
++
++-- id оружия в руках игрока (Unarmed, если ничего не экипировано).
++function WeaponService:GetEquippedWeaponId(player)
++    return (WeaponRegistry.ResolveFromCharacter(player.Character))
++end
++
++return WeaponService
+diff --git a/src/StarterPlayer/StarterPlayerScripts/CombatAnimationController.client.lua b/src/StarterPlayer/StarterPlayerScripts/CombatAnimationController.client.lua
+index 3df5cb6..1c1cdd0 100644
+--- a/src/StarterPlayer/StarterPlayerScripts/CombatAnimationController.client.lua
++++ b/src/StarterPlayer/StarterPlayerScripts/CombatAnimationController.client.lua
+@@ -42,6 +42,7 @@ local Shared = ReplicatedStorage:WaitForChild("Shared")
+ local CombatConfig = require(Shared:WaitForChild("Config"):WaitForChild("CombatConfig"))
+ local CombatAnimationConfig = require(Shared:WaitForChild("Config"):WaitForChild("CombatAnimationConfig"))
+ local CombatStates = require(Shared:WaitForChild("Constants"):WaitForChild("CombatStates"))
++local WeaponRegistry = require(Shared:WaitForChild("Weapons"):WaitForChild("WeaponRegistry"))
+ 
+ local Events = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("Events")
+ local CombatStateChanged = Events:WaitForChild("CombatStateChanged")
+@@ -98,21 +99,10 @@ local function debugLog(...)
+     end
+ end
+ 
+--- Оружие определяем так же, как CombatController: по атрибуту экипированного Tool.
++-- Оружие определяем через WeaponRegistry, как сервер и CombatController.
+ -- Для выбора анимации достаточно; урон и таймингами всё равно занимается сервер.
+ local function getWeaponId()
+-    local character = player.Character
+-    local tool = character and character:FindFirstChildOfClass("Tool")
+-
+-    if tool then
+-        local weaponId = tool:GetAttribute(CombatConfig.WeaponAttribute)
+-
+-        if type(weaponId) == "string" and CombatConfig.Weapons[weaponId] then
+-            return weaponId
+-        end
+-    end
+-
+-    return CombatConfig.UnarmedId
++    return (WeaponRegistry.ResolveFromCharacter(player.Character))
+ end
+ 
+ local function hasAnimation(slot, weaponId)
+diff --git a/src/StarterPlayer/StarterPlayerScripts/CombatController.client.lua b/src/StarterPlayer/StarterPlayerScripts/CombatController.client.lua
+index e03105a..c5dc143 100644
+--- a/src/StarterPlayer/StarterPlayerScripts/CombatController.client.lua
++++ b/src/StarterPlayer/StarterPlayerScripts/CombatController.client.lua
+@@ -19,8 +19,8 @@ local UserInputService = game:GetService("UserInputService")
+ 
+ local player = Players.LocalPlayer
+ 
+-local CombatConfig = require(
+-    ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config"):WaitForChild("CombatConfig")
++local WeaponRegistry = require(
++    ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Weapons"):WaitForChild("WeaponRegistry")
+ )
+ 
+ local CombatStates = require(
+@@ -66,19 +66,9 @@ end
+ 
+ -- Клиент использует конфиг только для темпа атак. Сервер определяет оружие сам.
+ local function getWeaponConfig()
+-    local character = player.Character
+-    local tool = character and character:FindFirstChildOfClass("Tool")
+-
+-    if tool then
+-        local weaponId = tool:GetAttribute(CombatConfig.WeaponAttribute)
+-        local weapon = type(weaponId) == "string" and CombatConfig.Weapons[weaponId]
+-
+-        if weapon then
+-            return weapon
+-        end
+-    end
++    local _, weapon = WeaponRegistry.ResolveFromCharacter(player.Character)
+ 
+-    return CombatConfig.Weapons[CombatConfig.UnarmedId]
++    return weapon
+ end
+ 
+ -- Анимации здесь не проигрываются: их показывает CombatAnimationController
+-- 
+2.43.0

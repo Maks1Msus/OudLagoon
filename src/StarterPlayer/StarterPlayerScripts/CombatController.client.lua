@@ -19,8 +19,8 @@ local UserInputService = game:GetService("UserInputService")
 
 local player = Players.LocalPlayer
 
-local CombatConfig = require(
-    ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config"):WaitForChild("CombatConfig")
+local WeaponRegistry = require(
+    ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Weapons"):WaitForChild("WeaponRegistry")
 )
 
 local CombatStates = require(
@@ -66,19 +66,9 @@ end
 
 -- Клиент использует конфиг только для темпа атак. Сервер определяет оружие сам.
 local function getWeaponConfig()
-    local character = player.Character
-    local tool = character and character:FindFirstChildOfClass("Tool")
+    local _, weapon = WeaponRegistry.ResolveFromCharacter(player.Character)
 
-    if tool then
-        local weaponId = tool:GetAttribute(CombatConfig.WeaponAttribute)
-        local weapon = type(weaponId) == "string" and CombatConfig.Weapons[weaponId]
-
-        if weapon then
-            return weapon
-        end
-    end
-
-    return CombatConfig.Weapons[CombatConfig.UnarmedId]
+    return weapon
 end
 
 -- Анимации здесь не проигрываются: их показывает CombatAnimationController

@@ -1,11 +1,8 @@
 local RunService = game:GetService("RunService")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Debris = game:GetService("Debris")
 
-local CombatConfig = require(
-    ReplicatedStorage.Shared.Config.CombatConfig
-)
 local TrainingDummyService = require(script.Parent.TrainingDummyService)
+local WeaponService = require(script.Parent.WeaponService)
 local CombatService = require(script.Parent.CombatService)
 local DataService = require(script.Parent.DataService)
 local RemoteService = require(script.Parent.RemoteService)
@@ -75,33 +72,15 @@ function Actions.AddStatPoints(player, profile, amount)
     PlayerService:PushProfile(player)
 end
 
--- Тестовый меч. Оружие распознаётся по атрибуту CombatWeaponId, который ставит сервер.
+-- Тестовый меч. Предмет создаёт WeaponService: оружие распознаётся по атрибуту
+-- CombatWeaponId, который ставит сервер.
 function Actions.GiveSword(player)
-    local backpack = player:FindFirstChildOfClass("Backpack")
-    local character = player.Character
+    WeaponService:Give(player, "Sword")
+end
 
-    if not backpack then
-        return
-    end
-
-    if backpack:FindFirstChild("Sword") or (character and character:FindFirstChild("Sword")) then
-        return
-    end
-
-    local tool = Instance.new("Tool")
-    tool.Name = "Sword"
-    tool.CanBeDropped = false
-    tool:SetAttribute(CombatConfig.WeaponAttribute, "Sword")
-
-    local handle = Instance.new("Part")
-    handle.Name = "Handle"
-    handle.Size = Vector3.new(0.4, 4, 0.4)
-    handle.Color = Color3.fromRGB(190, 195, 205)
-    handle.Material = Enum.Material.Metal
-    handle.Massless = true
-    handle.Parent = tool
-
-    tool.Parent = backpack
+-- Убирает всё выданное оружие, в том числе из рук: бой без оружия.
+function Actions.RemoveWeapons(player)
+    WeaponService:RemoveAll(player)
 end
 
 -- Неподвижный манекен с обычным Humanoid в 7 studs перед игроком.
