@@ -116,6 +116,56 @@ local function PlayLoop(slotName: string)
 
 	track:AdjustWeight(1, Settings.FadeIn)
 end
+--------------------------------------------------
+-- ANIMATION PHASE SYNCHRONIZATION
+--------------------------------------------------
+
+local function GetTrackPhase(track: AnimationTrack?): number?
+	if not track or not track.IsPlaying then
+		return nil
+	end
+
+	local length = track.Length
+
+	if length <= 0 then
+		return nil
+	end
+
+	return (track.TimePosition % length) / length
+end
+
+local function GetActiveLocomotionPhase(): number
+	if not Settings.PhaseSyncEnabled then
+		return 0
+	end
+
+	for _, track in pairs(ActiveLocomotionTracks) do
+		local phase = GetTrackPhase(track)
+
+		if phase ~= nil then
+			return phase
+		end
+	end
+
+	return 0
+end
+
+local function PlayTrackAtPhase(
+	track: AnimationTrack,
+	phase: number,
+	fadeTime: number
+)
+	track.Looped = true
+	track:Play(fadeTime, 0)
+
+	if not Settings.PhaseSyncEnabled then
+		return
+	end
+
+	if track.Length > 0 then
+		track.TimePosition = phase * track.Length
+	end
+end
 
 local function StopAllLocomotion(fadeTime: number?)
 	for slotName, track in pairs(ActiveLocomotionTracks) do
@@ -277,6 +327,8 @@ local function ApplyDirectionalBlend(
 	movementMode: string,
 	direction: Vector3
 )
+	local syncPhase = GetActiveLocomotionPhase()
+
 	local firstDirection, secondDirection, alpha =
 		GetDirectionalBlend(direction)
 
@@ -341,8 +393,7 @@ local function ApplyDirectionalBlend(
 		local track = data.track
 
 		if not track.IsPlaying then
-			track.Looped = true
-			track:Play(0, 0)
+			PlayTrackAtPhase(track, syncPhase, 0)
 		end
 
 		track:AdjustWeight(
@@ -365,7 +416,7 @@ local function ApplyForwardLocomotion(movementMode: string)
 	if not track then
 		return
 	end
-
+	local syncPhase = GetActiveLocomotionPhase()
 	for activeSlot, activeTrack in pairs(ActiveLocomotionTracks) do
 		if activeSlot ~= slotName then
 			StopTrack(activeTrack, Settings.DirectionBlendTime)
@@ -374,8 +425,11 @@ local function ApplyForwardLocomotion(movementMode: string)
 	end
 
 	if not track.IsPlaying then
-		track.Looped = true
-		track:Play(Settings.FadeIn)
+		PlayTrackAtPhase(
+			track,
+			syncPhase,
+			Settings.FadeIn
+		)
 	end
 
 	track:AdjustWeight(1, Settings.DirectionBlendTime)

@@ -10,6 +10,17 @@ CombatStateConfig.Block = {
     DirectionAngle = 120,   -- ширина защищаемого сектора спереди, градусы (весь сектор:
                             -- +-60 от направления взгляда); используется при обработке урона
 }
+CombatStateConfig.Stun = {
+    DefaultDuration = 0.20,
+
+    LightHitDuration = 0.20,
+    HeavyHitDuration = 0.45,
+    ParryDuration = 0.75,
+    AbilityDuration = 0.80,
+
+    MaxDuration = 1.50,
+    PostStunImmunity = 0.30,
+}
 
 CombatStateConfig.Dodge = {
     Duration = 0.35,        -- длительность рывка
@@ -18,9 +29,5 @@ CombatStateConfig.Dodge = {
     Cooldown = 1.0,         -- отсчитывается от начала уклонения
 }
 
-CombatStateConfig.Stun = {
-    DefaultDuration = 1.0,
-    MaxDuration = 5.0,
-}
 
 return CombatStateConfig

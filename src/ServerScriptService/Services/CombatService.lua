@@ -1,6 +1,10 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
+local CombatStateConfig = require(
+    ReplicatedStorage.Shared.Config.CombatStateConfig
+)
+
 local CombatConfig = require(
     ReplicatedStorage.Shared.Config.CombatConfig
 )
@@ -26,7 +30,6 @@ local NextAttackAt = setmetatable({}, { __mode = "k" })
 -- [character] = данные текущего удара, пока он не завершился:
 -- { AttackId, Player (nil у NPC), Character, WeaponId, Weapon, Strength (только NPC) }
 local Attacks = setmetatable({}, { __mode = "k" })
-
 local function Log(...)
     if CombatConfig.DebugLogging then
         print("[CombatService]", ...)
@@ -323,12 +326,43 @@ function CombatService:RunActiveWindow(attack)
                     damage,
                     root.Position
                 )
+                local victim = Players:GetPlayerFromCharacter(target.Model)
 
-                -- Damage - сколько урона реально нанесено, Result - Hit | Blocked | Parried.
-                -- Условие не зависит от того, кто бьёт: событие защищающемуся игроку нужно
-                -- и тогда, когда атакует NPC (player == nil).
+                -- Обычное попадание оглушает получателя.
+                if outcome.Result == CombatStates.DamageResults.Hit
+                    and outcome.Damage > 0
+                then
+                    CombatStateService:ApplyStun(
+                        target.Model,
+                        weapon.HitStun,
+                        "Hit"
+                    )
+                end
+
+                -- Успешное парирование оглушает атакующего.
+                -- Визуальная реакция Parried отправляется отдельно и не зависит
+                -- от того, является атакующий игроком или NPC.
+                if outcome.Result == CombatStates.DamageResults.Parried then
+                    CombatStateService:ApplyStun(
+                        character,
+                        CombatStateConfig.Stun.ParryDuration,
+                        "Parry"
+                    )
+
+                    if player then
+                        feedback:FireClient(player, {
+                            Kind = "Reaction",
+                            Reaction = "Parried",
+                        })
+                    end
+
+                    -- Для NPC здесь потребуется вызов NPCCombatAnimationService.
+                    -- Его API подключим после проверки самого сервиса.
+                end
+
+                -- Damage - фактически нанесённый урон; Result - Hit | Blocked | Parried.
+                -- Received отправляется ровно один раз, в том числе когда атакует NPC.
                 if outcome.Result ~= CombatStates.DamageResults.Ignored then
-                    -- Атакующему-игроку: числа урона, эффекты. У NPC получателя нет.
                     if player then
                         feedback:FireClient(player, {
                             Kind = "Hit",
@@ -338,10 +372,6 @@ function CombatService:RunActiveWindow(attack)
                         })
                     end
 
-                    -- Результат удара защищающемуся игроку: по нему клиент проигрывает
-                    -- реакции (Parry, BlockHit, Hit). Если защищается NPC, получателя нет.
-                    local victim = Players:GetPlayerFromCharacter(target.Model)
-
                     if victim then
                         feedback:FireClient(victim, {
                             Kind = "Received",
@@ -350,6 +380,7 @@ function CombatService:RunActiveWindow(attack)
                         })
                     end
                 end
+
             end
         end
 
@@ -491,6 +522,8 @@ function CombatService:HandleStateRequest(player, action)
     return true
 end
 
+
+
 function CombatService:Init()
     -- Ошибка конфигурации должна проявиться при запуске, а не в бою
     for weaponId, weapon in pairs(CombatConfig.Weapons) do
@@ -576,5 +609,6 @@ function CombatService:Init()
 
     print("[CombatService] Initialized")
 end
+
 
 return CombatService

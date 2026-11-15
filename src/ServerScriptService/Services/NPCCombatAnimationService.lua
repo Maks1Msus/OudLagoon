@@ -236,6 +236,8 @@ local function OnStateChanged(character, newState, oldState)
         end
     elseif newState == CombatStates.Idle or newState == CombatStates.Dead then
         StopActive(entry)
+    elseif newState == CombatStates.Stunned then
+        PlaySlot(entry, "Stun")
     end
 end
 
@@ -334,6 +336,18 @@ function NPCCombatAnimationService:Unregister(model)
     for _, animation in pairs(entry.Animations) do
         animation:Destroy()
     end
+end
+
+function NPCCombatAnimationService:PlayReaction(model, slot)
+    local entry = Entries[model]
+
+    if not entry then
+        return false
+    end
+
+    PlayReaction(entry, slot)
+
+    return true
 end
 
 function NPCCombatAnimationService:Init()

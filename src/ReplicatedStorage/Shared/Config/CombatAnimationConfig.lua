@@ -29,15 +29,20 @@ local CombatAnimationConfig = {}
 -- Looped   - зацикливать ли анимацию.
 CombatAnimationConfig.Slots = {
     Attack = { Priority = Enum.AnimationPriority.Action2, Looped = false },
+
     BlockStart = { Priority = Enum.AnimationPriority.Action, Looped = false },
     BlockLoop = { Priority = Enum.AnimationPriority.Action, Looped = true },
     BlockHit = { Priority = Enum.AnimationPriority.Action3, Looped = false },
-    Parry = { Priority = Enum.AnimationPriority.Action3, Looped = false },
-    Hit = { Priority = Enum.AnimationPriority.Action3, Looped = false },
-    Stun = { Priority = Enum.AnimationPriority.Action4, Looped = true },
+
+    Parried = { Priority = Enum.AnimationPriority.Action4, Looped = false },
+
+    Hit1 = { Priority = Enum.AnimationPriority.Action3, Looped = false },
+    Hit2 = { Priority = Enum.AnimationPriority.Action3, Looped = false },
+    Hit3 = { Priority = Enum.AnimationPriority.Action3, Looped = false },
+
+    Stunned = { Priority = Enum.AnimationPriority.Action4, Looped = true },
     Dodge = { Priority = Enum.AnimationPriority.Action3, Looped = false },
 }
-
 -- Анимации конкретного оружия. Ключ = идентификатор оружия из CombatConfig.Weapons.
 -- Любой слот можно переопределить для оружия (например, BlockStart/BlockLoop/Parry меча);
 -- иначе берётся Common.
@@ -57,8 +62,12 @@ CombatAnimationConfig.Common = {
     BlockLoop = "rbxassetid://132713008662757",
     BlockHit = "rbxassetid://0",
     Parry = "rbxassetid://98950245815500",
-    Hit = "rbxassetid://0",
-    Stun = "rbxassetid://0",
+    Hit1 = "rbxassetid://0",
+    Hit2 = "rbxassetid://0",
+    Hit3 = "rbxassetid://0",
+
+    Parried = "rbxassetid://0",
+    Stunned = "rbxassetid://86159934712814",
     Dodge = "rbxassetid://0",
 }
 

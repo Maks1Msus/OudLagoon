@@ -438,8 +438,6 @@ local function applyState(payload, restoring)
         end
     elseif state == CombatStates.Blocking then
         enterBlock(weaponId, restoring and elapsed or 0)
-    elseif state == CombatStates.Stunned then
-        playSlot("Stun", weaponId, restoring and elapsed or nil)
     elseif state == CombatStates.Dodging then
         playSlot("Dodge", weaponId, restoring and elapsed or nil)
     elseif state == CombatStates.Idle then
@@ -471,7 +469,7 @@ CombatStateChanged.OnClientEvent:Connect(onStateChanged)
 -- РЕЗУЛЬТАТ УДАРА ПО СВОЕМУ ПЕРСОНАЖУ -------------------------------------
 
 local function onFeedback(payload)
-    if type(payload) ~= "table" or payload.Kind ~= "Received" then
+    if type(payload) ~= "table" then
         return
     end
 
@@ -480,22 +478,31 @@ local function onFeedback(payload)
     end
 
     local weaponId = getWeaponId()
-    local result = payload.Result
 
-    if result == DamageResults.Parried then
-        -- Парирование прерывает блок; без назначенной анимации блок не трогаем
-        if currentState == CombatStates.Blocking and hasAnimation(SLOT_PARRY, weaponId) then
-            playSlot(SLOT_PARRY, weaponId, nil, function()
-                startBlockLoop(weaponId)
-            end)
+    if payload.Kind == "Reaction" then
+        if payload.Reaction == "Parried" then
+            playSlot("Parried", weaponId)
+        elseif payload.Reaction == "Stunned" then
+            playSlot("Stunned", weaponId)
         end
-    elseif result == DamageResults.Blocked then
+
+        return
+    end
+
+    if payload.Kind ~= "Received" then
+        return
+    end
+
+    if payload.Result == DamageResults.Blocked then
         if currentState == CombatStates.Blocking then
             playReaction(SLOT_BLOCK_HIT, weaponId)
         end
-    elseif result == DamageResults.Hit then
-        if not Settings.SuppressHitDuring[currentState] then
-            playReaction(SLOT_HIT, weaponId)
+
+    elseif payload.Result == DamageResults.Hit then
+        local hitSlot = getRandomHitSlot()
+
+        if hitSlot then
+            playReaction(hitSlot, weaponId)
         end
     end
 end

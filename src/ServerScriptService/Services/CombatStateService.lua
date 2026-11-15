@@ -101,6 +101,7 @@ local attackCounter = 0
 
 local function NewRecord()
     transitionCounter += 1
+    
 
     return {
         State = State.Idle,
@@ -112,7 +113,7 @@ local function NewRecord()
         Block = nil,
         Dodge = nil,
         Stun = nil,
-
+        StunImmuneUntil = 0,
         -- Кулдауны переживают смену состояния
         Cooldowns = { Dodge = 0 },
 
@@ -298,6 +299,11 @@ function CombatStateService:Transition(character, newState, options)
     local oldState = record.State
     local oldKey = SubRecordKey[oldState]
 
+    if oldState == State.Stunned then
+        record.StunImmuneUntil =
+            now + CombatStateConfig.Stun.PostStunImmunity
+    end
+
     if oldKey then
         record[oldKey] = nil
     end
@@ -382,6 +388,52 @@ end
 
 local function IsFiniteNumber(value)
     return type(value) == "number" and value == value and value ~= math.huge and value ~= -math.huge
+end
+-- Оглушает персонажа на заданное время.
+-- Стан прерывает любое разрешённое текущее боевое состояние.
+-- Повторный стан не продлевает действующий и не обходит иммунитет.
+function CombatStateService:ApplyStun(character, duration, source)
+    local record = GetRecord(character)
+
+    if record.State == State.Dead then
+        return false, "Dead"
+    end
+
+    if record.State == State.Stunned then
+        return false, "AlreadyStunned"
+    end
+
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+
+    if not humanoid or humanoid.Health <= 0 then
+        return false, "CharacterUnavailable"
+    end
+
+    local now = os.clock()
+
+    if now < record.StunImmuneUntil then
+        return false, "StunImmune"
+    end
+
+    duration = duration or CombatStateConfig.Stun.DefaultDuration
+
+    if not IsFiniteNumber(duration) or duration <= 0 then
+        return false, "InvalidDuration"
+    end
+
+    duration = math.min(
+        duration,
+        CombatStateConfig.Stun.MaxDuration
+    )
+
+    return self:Transition(character, State.Stunned, {
+        Duration = duration,
+
+        Data = {
+            Source = source or "Unknown",
+            Duration = duration,
+        },
+    })
 end
 
 -- Параметры фаз (CombatConfig.Weapons[...].AttackTiming): Active обязана быть > 0.
@@ -674,6 +726,28 @@ local function ValidateConfig()
             and block.DirectionAngle <= 360,
         "[CombatStateService] Block.DirectionAngle must be a number in (0, 360]"
     )
+    local stun = CombatStateConfig.Stun
+
+    assert(
+        IsFiniteNumber(stun.DefaultDuration)
+            and stun.DefaultDuration > 0,
+        "[CombatStateService] Stun.DefaultDuration must be > 0"
+    )
+
+    assert(
+        IsFiniteNumber(stun.MaxDuration)
+            and stun.MaxDuration > 0,
+        "[CombatStateService] Stun.MaxDuration must be > 0"
+    )
+
+    assert(
+        IsFiniteNumber(stun.PostStunImmunity)
+            and stun.PostStunImmunity >= 0,
+        "[CombatStateService] Stun.PostStunImmunity must be >= 0"
+    )
+
+    assert(stun.MaxDuration >= stun.DefaultDuration,
+        "[CombatStateService] Stun.MaxDuration must be >= DefaultDuration")
 end
 
 function CombatStateService:Init()

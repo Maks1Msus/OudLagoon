@@ -32,6 +32,9 @@ Config.Settings = {
 	-- Shift Lock detection
 	ShiftLockAttribute = "OudLagoonShiftLock",
 
+	-- Animation phase synchronization
+	PhaseSyncEnabled = true,
+
 	-- Debug
 	DebugLogging = false,
 }
