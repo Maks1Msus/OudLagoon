@@ -10,6 +10,7 @@ local ProgressionService = require(
     Services.ProgressionService
 )
 local CombatStateService = require(Services.CombatStateService)
+local ComboService = require(Services.ComboService)
 local CombatService = require(Services.CombatService)
 local NPCCombatAnimationService = require(Services.NPCCombatAnimationService)
 
@@ -21,11 +22,14 @@ local GameConfig = require(
 RemoteService:Init()
 PlayerService:Init()
 ProgressionService:Init()
+
 CombatStateService:Init()
+ComboService:Init()
 CombatService:Init()
+
 NPCCombatAnimationService:Init()
 TrainingDummyService:Init()
-DebugService:Init() -- активен только в Roblox Studio
+DebugService:Init()
 
 print("================================")
 print(" ReZero MMORPG Core Framework ")

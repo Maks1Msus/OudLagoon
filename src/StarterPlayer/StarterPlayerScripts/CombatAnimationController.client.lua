@@ -89,6 +89,9 @@ local currentState = CombatStates.Idle
 -- (BlockStart -> BlockLoop, Parry -> BlockLoop) проверяют его и не срабатывают,
 -- если за это время анимация уже сменилась (например, игрок отпустил блок).
 local playToken = 0
+local unarmedIdleExpiresAt = 0
+local unarmedIdleToken = 0
+local characterConnections = {}
 
 -- Состояние от сервера, пришедшее раньше, чем загрузился Animator
 local pendingPayload = nil
@@ -206,6 +209,14 @@ local function resetTracks()
     for _, animation in pairs(animations) do
         animation:Destroy()
     end
+    unarmedIdleToken += 1
+    unarmedIdleExpiresAt = 0
+
+    for _, connection in ipairs(characterConnections) do
+        connection:Disconnect()
+    end
+
+    table.clear(characterConnections)
 
     tracks = {}
     animations = {}
@@ -363,6 +374,82 @@ local function playSlot(slot, weaponId, startAt, onFinished)
 
     return true
 end
+local function isUnarmedIdleAllowed()
+    if not animator or not characterHumanoid then
+        return false
+    end
+
+    if characterHumanoid.Health <= 0 then
+        return false
+    end
+
+    if currentState ~= CombatStates.Idle then
+        return false
+    end
+
+    if getWeaponId() ~= "Unarmed" then
+        return false
+    end
+
+    if characterHumanoid.MoveDirection.Magnitude > 0.05 then
+        return false
+    end
+
+    local humanoidState = characterHumanoid:GetState()
+
+    if humanoidState == Enum.HumanoidStateType.Jumping
+        or humanoidState == Enum.HumanoidStateType.Freefall
+        or humanoidState == Enum.HumanoidStateType.FallingDown
+        or humanoidState == Enum.HumanoidStateType.Swimming
+        or humanoidState == Enum.HumanoidStateType.Climbing
+        or humanoidState == Enum.HumanoidStateType.Seated
+    then
+        return false
+    end
+
+    return true
+end
+
+local function refreshUnarmedIdle()
+    if unarmedIdleExpiresAt <= os.clock() then
+        if activeSlot == "UnarmedIdle" then
+            stopActive(Settings.UnarmedIdleFadeOut)
+        end
+
+        return
+    end
+
+    if isUnarmedIdleAllowed() then
+        playSlot("UnarmedIdle", "Unarmed")
+    elseif activeSlot == "UnarmedIdle" then
+        stopActive(Settings.UnarmedIdleFadeOut)
+    end
+end
+
+local function startUnarmedIdleWindow()
+    if getWeaponId() ~= "Unarmed" then
+        return
+    end
+
+    unarmedIdleToken += 1
+    local token = unarmedIdleToken
+
+    unarmedIdleExpiresAt = os.clock() + Settings.UnarmedIdleDuration
+
+    refreshUnarmedIdle()
+
+    task.delay(Settings.UnarmedIdleDuration, function()
+        if token ~= unarmedIdleToken then
+            return
+        end
+
+        unarmedIdleExpiresAt = 0
+
+        if activeSlot == "UnarmedIdle" then
+            stopActive(Settings.UnarmedIdleFadeOut)
+        end
+    end)
+end
 
 -- Короткая реакция поверх текущей позы. Основную анимацию не трогает.
 local function playReaction(slot, weaponId)
@@ -442,6 +529,12 @@ local function applyState(payload, restoring)
         local isNewAttack = payload.OldState ~= nil and payload.OldState ~= CombatStates.Attacking
 
         if isNewAttack then
+            unarmedIdleToken += 1
+            unarmedIdleExpiresAt = 0
+
+            if activeSlot == "UnarmedIdle" then
+                stopActive()
+            end
             playSlot(SLOT_ATTACK, weaponId)
         elseif restoring then
             -- Sync посреди удара: показываем атаку с текущего момента, если она ещё не идёт
@@ -460,7 +553,17 @@ local function applyState(payload, restoring)
     elseif state == CombatStates.Dodging then
         playSlot("Dodge", weaponId, restoring and elapsed or nil)
     elseif state == CombatStates.Idle then
-        stopActive()
+        if payload.OldState == CombatStates.Attacking
+            and weaponId == "Unarmed"
+        then
+            startUnarmedIdleWindow()
+        else
+            refreshUnarmedIdle()
+
+            if unarmedIdleExpiresAt <= os.clock() then
+                stopActive()
+            end
+        end
     elseif state == CombatStates.Dead then
         stopActive()
         stopReaction()
@@ -556,7 +659,7 @@ local function bindCharacter(character)
     resetTracks()
 
     local humanoid = character:WaitForChild("Humanoid", 10)
-
+    
     if not humanoid then
         return
     end
@@ -575,6 +678,49 @@ local function bindCharacter(character)
 
     animator = characterAnimator
     characterHumanoid = humanoid
+        table.insert(
+        characterConnections,
+        humanoid.Running:Connect(function(speed)
+            if speed > 0.1 then
+                if activeSlot == "UnarmedIdle" then
+                    stopActive(Settings.UnarmedIdleFadeOut)
+                end
+            else
+                refreshUnarmedIdle()
+            end
+        end)
+    )
+
+    table.insert(
+        characterConnections,
+        humanoid.StateChanged:Connect(function(_, newState)
+            if newState == Enum.HumanoidStateType.Jumping
+                or newState == Enum.HumanoidStateType.Freefall
+            then
+                if activeSlot == "UnarmedIdle" then
+                    stopActive(Settings.UnarmedIdleFadeOut)
+                end
+            else
+                refreshUnarmedIdle()
+            end
+        end)
+    )
+
+    local function onEquipmentChanged(child)
+        if child:IsA("Tool") then
+            task.defer(refreshUnarmedIdle)
+        end
+    end
+
+    table.insert(
+        characterConnections,
+        character.ChildAdded:Connect(onEquipmentChanged)
+    )
+
+    table.insert(
+        characterConnections,
+        character.ChildRemoved:Connect(onEquipmentChanged)
+    )
 
     -- Смерть всегда обрывает боевую анимацию (сервер может сообщить о ней позже)
     humanoid.Died:Connect(function()

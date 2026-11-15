@@ -61,13 +61,18 @@ CombatAnimationConfig.Slots = {
 
     Stunned = { Priority = Enum.AnimationPriority.Action4, Looped = true },
     Dodge = { Priority = Enum.AnimationPriority.Action3, Looped = false },
+    UnarmedIdle = {
+        Priority = Enum.AnimationPriority.Action,
+        Looped = true,
+    },
 }
 -- Анимации конкретного оружия. Ключ = идентификатор оружия из CombatConfig.Weapons.
 -- Любой слот можно переопределить для оружия (например, BlockStart/BlockLoop/Parry меча);
 -- иначе берётся Common.
 CombatAnimationConfig.Weapons = {
     Unarmed = {
-        Attack = "rbxassetid://71788438859538",
+        Attack = "rbxassetid://102078600906488",
+        UnarmedIdle = "rbxassetid://89432023654340",
     },
 
     Sword = {
@@ -81,11 +86,11 @@ CombatAnimationConfig.Common = {
     BlockLoop = "rbxassetid://132713008662757",
     BlockHit = "rbxassetid://0",
     Parry = "rbxassetid://98950245815500",
-    Hit1 = "rbxassetid://0",
-    Hit2 = "rbxassetid://0",
-    Hit3 = "rbxassetid://0",
+    Hit1 = "rbxassetid://96097949360272",
+    Hit2 = "rbxassetid://129430604398091",
+    Hit3 = "rbxassetid://111577929725231",
 
-    Parried = "rbxassetid://0",
+    Parried = "rbxassetid://127150676382449",
     Stunned = "rbxassetid://86159934712814",
     Dodge = "rbxassetid://0",
 }
@@ -105,6 +110,9 @@ CombatAnimationConfig.Settings = {
         Dodging = true,
         Stunned = true,
     },
+    UnarmedIdleDuration = 5,
+    UnarmedIdleFadeIn = 0.15,
+    UnarmedIdleFadeOut = 0.15,
 
     -- Предупреждать, если длина анимации атаки расходится с серверным таймингом
     WarnOnLengthMismatch = true,
@@ -177,7 +185,7 @@ end
 -- Слоты, которые использует код боевых анимаций (клиент игрока и NPC).
 CombatAnimationConfig.RequiredSlots = {
     "Attack", "BlockStart", "BlockLoop", "BlockHit", "Parry", "Parried",
-    "Hit1", "Hit2", "Hit3", "Stunned", "Dodge",
+    "Hit1", "Hit2", "Hit3", "Stunned", "Dodge", "UnarmedIdle"
 }
 
 -- Проверка согласованности конфигурации. Возвращает список проблем (пустой = всё в порядке).

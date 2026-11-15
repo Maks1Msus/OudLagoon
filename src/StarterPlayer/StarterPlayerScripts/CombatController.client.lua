@@ -34,7 +34,8 @@ local CombatStateRequest = Events:WaitForChild("CombatStateRequest")
 local CombatStateChanged = Events:WaitForChild("CombatStateChanged")
 
 -- Небольшой запас сверх кулдауна, чтобы запрос не приходил на сервер чуть раньше времени
-local CLIENT_COOLDOWN_MARGIN = 0.02
+local ATTACK_REQUEST_INTERVAL = 0.08
+local nextAttackRequestAt = 0
 
 -- Как часто повторяется BlockStart, пока блок удерживается, но сервер его ещё не принял
 -- (например, идёт собственная атака). Лимит сервера - 20 запросов в секунду.
@@ -50,7 +51,6 @@ local CANNOT_ATTACK_STATES = {
 
 local attackHeld = false
 local blockHeld = false
-local nextAttackAt = 0
 local nextBlockRequestAt = 0
 
 -- Последнее состояние, сообщённое сервером
@@ -83,25 +83,17 @@ local function tryAttack()
         return
     end
 
-    -- Намерение защищаться важнее атаки; запрещённые состояния не расходуют кулдаун
     if blockHeld or CANNOT_ATTACK_STATES[combatState] then
         return
     end
 
     local now = os.clock()
 
-    if now < nextAttackAt then
+    if now < nextAttackRequestAt then
         return
     end
 
-    local weapon = getWeaponConfig()
-
-    -- Новый удар нельзя начать, пока идёт предыдущий (Startup + Active + Recovery),
-    -- а кулдаун оружия считается отдельно: ждём большее из двух значений.
-    local timing = weapon.AttackTiming
-    local swingDuration = timing and (timing.Startup + timing.Active + timing.Recovery) or 0
-
-    nextAttackAt = now + math.max(weapon.Cooldown, swingDuration) + CLIENT_COOLDOWN_MARGIN
+    nextAttackRequestAt = now + ATTACK_REQUEST_INTERVAL
 
     CombatRequest:FireServer("Attack")
 end
