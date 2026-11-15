@@ -363,6 +363,11 @@ function CombatService:RunActiveWindow(attack)
                 )
                 local victim = Players:GetPlayerFromCharacter(target.Model)
 
+                -- Состояние получателя В МОМЕНТ удара (до оглушения от этого удара).
+                -- Уходит клиенту: иначе сообщение о Stunned придёт раньше Received, и клиент
+                -- решил бы, что получатель уже оглушён, и подавил бы реакцию Hit.
+                local victimState = CombatStateService:GetState(target.Model)
+
                 -- Обычное попадание оглушает получателя.
                 if outcome.Result == CombatStates.DamageResults.Hit
                     and outcome.Damage > 0
@@ -410,6 +415,7 @@ function CombatService:RunActiveWindow(attack)
                     if victim then
                         feedback:FireClient(victim, {
                             Kind = "Received",
+                            VictimState = victimState,
                             Damage = outcome.Damage,
                             Result = outcome.Result,
                         })

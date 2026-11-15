@@ -81,11 +81,11 @@ CombatAnimationConfig.Common = {
     BlockLoop = "rbxassetid://132713008662757",
     BlockHit = "rbxassetid://0",
     Parry = "rbxassetid://98950245815500",
-    Hit1 = "rbxassetid://138056454440264",
-    Hit2 = "rbxassetid://138056454440264",
-    Hit3 = "rbxassetid://138056454440264",
+    Hit1 = "rbxassetid://0",
+    Hit2 = "rbxassetid://0",
+    Hit3 = "rbxassetid://0",
 
-    Parried = "rbxassetid://138056454440264",
+    Parried = "rbxassetid://0",
     Stunned = "rbxassetid://86159934712814",
     Dodge = "rbxassetid://0",
 }
@@ -137,6 +137,12 @@ function CombatAnimationConfig.GetAnimationId(slot, weaponId)
     end
 
     return nil
+end
+
+-- Единое правило для игроков и NPC: проигрывать ли реакцию Hit1..3, если в момент удара
+-- получатель находился в состоянии state (см. Settings.SuppressHitDuring).
+function CombatAnimationConfig.ShouldPlayHit(state)
+    return not CombatAnimationConfig.Settings.SuppressHitDuring[state]
 end
 
 -- Случайный слот реакции на урон среди НАЗНАЧЕННЫХ Hit1..3, не равный lastSlot
@@ -199,8 +205,19 @@ function CombatAnimationConfig.Validate()
             add("Slots." .. slot, "has no boolean Looped")
         end
 
-        if CombatAnimationConfig.Common[slot] == nil then
-            add("Common has no entry for slot", slot, "(use \"rbxassetid://0\" as placeholder)")
+        -- Слот должен быть объявлен в Common либо хотя бы у одного оружия
+        -- (например, Attack лежит только в Weapons.Unarmed / Weapons.Sword)
+        local declared = CombatAnimationConfig.Common[slot] ~= nil
+
+        for _, animations in pairs(CombatAnimationConfig.Weapons) do
+            if animations[slot] ~= nil then
+                declared = true
+                break
+            end
+        end
+
+        if not declared then
+            add("slot", slot, "has no entry in Common or in any weapon (use \"rbxassetid://0\" as placeholder)")
         end
     end
 

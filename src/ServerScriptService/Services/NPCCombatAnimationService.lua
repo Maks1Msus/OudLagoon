@@ -282,7 +282,7 @@ local function OnDamageApplied(character, outcome)
             PlayReaction(entry, "BlockHit", backToBlock)
         end
     elseif result == DamageResults.Hit then
-        if not Settings.SuppressHitDuring[state] then
+        if CombatAnimationConfig.ShouldPlayHit(state) then
             -- Свой вариант на каждый NPC: не повторяем предыдущий
             local slot = CombatAnimationConfig.PickHitSlot(CombatConfig.UnarmedId, entry.LastHitSlot)
 

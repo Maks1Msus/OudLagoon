@@ -19,7 +19,8 @@
 -- Результат удара по своему персонажу (CombatFeedback, Kind = "Received"):
 --   Parried -> Parry заменяет блок, после неё снова включается BlockLoop;
 --   Blocked -> BlockHit накладывается поверх блока (блок не прерывается);
---   Hit     -> один из Hit1..3 (getRandomHitSlot, без повтора подряд) поверх текущей позы.
+--   Hit     -> один из Hit1..3 (getRandomHitSlot, без повтора подряд) поверх текущей позы,
+--              кроме состояний из Settings.SuppressHitDuring (то же правило, что у NPC).
 --
 -- Явные реакции (CombatFeedback, Kind = "Reaction"):
 --   Parried - мой удар парировали;
@@ -543,10 +544,16 @@ local function onFeedback(payload)
         end
 
     elseif payload.Result == DamageResults.Hit then
-        local hitSlot = getRandomHitSlot(weaponId)
+        -- То же правило, что у NPC (Settings.SuppressHitDuring). Берём состояние в момент
+        -- удара от сервера: к приходу Received currentState уже может быть Stunned от этого удара.
+        local stateAtHit = type(payload.VictimState) == "string" and payload.VictimState or currentState
 
-        if hitSlot then
-            playReaction(hitSlot, weaponId)
+        if CombatAnimationConfig.ShouldPlayHit(stateAtHit) then
+            local hitSlot = getRandomHitSlot(weaponId)
+
+            if hitSlot then
+                playReaction(hitSlot, weaponId)
+            end
         end
     end
 end
