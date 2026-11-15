@@ -6,6 +6,7 @@ local CombatConfig = require(
     ReplicatedStorage.Shared.Config.CombatConfig
 )
 local TrainingDummyService = require(script.Parent.TrainingDummyService)
+local CombatService = require(script.Parent.CombatService)
 local DataService = require(script.Parent.DataService)
 local RemoteService = require(script.Parent.RemoteService)
 local PlayerService = require(script.Parent.PlayerService)
@@ -116,6 +117,17 @@ end
 -- Манекен, который сам атакует игрока, подошедшего на дистанцию удара.
 function Actions.SpawnAggressiveDummy(player)
     TrainingDummyService:SpawnForPlayer(player, "Aggressive")
+end
+
+-- Оглушение способностью: проверка явного события Stunned у игрока и у манекенов.
+function Actions.StunSelf(player)
+    if player.Character then
+        CombatService:ApplyAbilityStun(player.Character)
+    end
+end
+
+function Actions.StunDummies()
+    TrainingDummyService:StunAll()
 end
 
 function Actions.RemoveDummy()

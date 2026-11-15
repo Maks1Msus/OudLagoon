@@ -394,6 +394,19 @@ function TrainingDummyService:RemoveAll()
     return removedCount
 end
 
+-- Оглушает всех манекенов способностью (явное событие Stunned). Возвращает число оглушённых.
+function TrainingDummyService:StunAll(duration)
+    local count = 0
+
+    for _, dummy in ipairs(GetDummies()) do
+        if CombatService:ApplyAbilityStun(dummy, duration) then
+            count += 1
+        end
+    end
+
+    return count
+end
+
 function TrainingDummyService:GetCount()
     return #GetDummies()
 end

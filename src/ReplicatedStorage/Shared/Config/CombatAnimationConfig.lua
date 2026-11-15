@@ -20,9 +20,25 @@
 -- РЕАКЦИИ (накладываются поверх текущей позы и не меняют состояние):
 --   Parry    - успешное парирование; прерывает блок, затем снова включается BlockLoop;
 --   BlockHit - короткая реакция на удар, принятый в блок;
---   Hit      - получение полного урона.
+--   Hit1..3  - получение полного урона; вариант выбирается случайно, без повтора подряд
+--              (PickHitSlot), берутся только назначенные;
+--   Parried  - реакция АТАКУЮЩЕГО, чей удар парировали (клиент игрока и NPC);
+--   Stunned  - оглушение СПОСОБНОСТЬЮ. Играет только по явному событию (CombatFeedback,
+--              Kind = "Reaction", Reaction = "Stunned" / PlayReaction у NPC), а не при
+--              любом переходе в состояние Stunned: оглушение от удара и парирования
+--              показывается реакциями Hit1..3 и Parried.
+--
+-- Приоритеты: блок (Action) < Attack (Action2) < BlockHit и Hit1..3 (Action3) <
+-- Parry, Parried, Stunned (Action4). Parry выше BlockHit, чтобы реакция на предыдущий
+-- удар не перекрывала парирование.
+
+local CombatConfig = require(script.Parent.CombatConfig)
+local CombatStates = require(script.Parent.Parent.Constants.CombatStates)
 
 local CombatAnimationConfig = {}
+
+-- Слоты реакции на полный урон (из них PickHitSlot выбирает случайный).
+CombatAnimationConfig.HitSlots = { "Hit1", "Hit2", "Hit3" }
 
 -- Слоты: что именно можно проиграть и как.
 -- Priority - приоритет AnimationTrack (перекрывает приоритет, заданный в самом ассете).
@@ -33,6 +49,9 @@ CombatAnimationConfig.Slots = {
     BlockStart = { Priority = Enum.AnimationPriority.Action, Looped = false },
     BlockLoop = { Priority = Enum.AnimationPriority.Action, Looped = true },
     BlockHit = { Priority = Enum.AnimationPriority.Action3, Looped = false },
+
+    -- Парирование (защищающийся). Должно быть выше BlockHit и блока.
+    Parry = { Priority = Enum.AnimationPriority.Action4, Looped = false },
 
     Parried = { Priority = Enum.AnimationPriority.Action4, Looped = false },
 
@@ -62,11 +81,11 @@ CombatAnimationConfig.Common = {
     BlockLoop = "rbxassetid://132713008662757",
     BlockHit = "rbxassetid://0",
     Parry = "rbxassetid://98950245815500",
-    Hit1 = "rbxassetid://0",
-    Hit2 = "rbxassetid://0",
-    Hit3 = "rbxassetid://0",
+    Hit1 = "rbxassetid://138056454440264",
+    Hit2 = "rbxassetid://138056454440264",
+    Hit3 = "rbxassetid://138056454440264",
 
-    Parried = "rbxassetid://0",
+    Parried = "rbxassetid://138056454440264",
     Stunned = "rbxassetid://86159934712814",
     Dodge = "rbxassetid://0",
 }
@@ -79,8 +98,8 @@ CombatAnimationConfig.Settings = {
     -- Даёт плавный переход без рывка: две анимации перекрываются на это время.
     LoopBlendTime = 0.1,
 
-    -- В этих состояниях реакция Hit не проигрывается: сервер удар не прерывает
-    -- (оглушения от попадания пока нет), поэтому реакция выглядела бы как прерывание.
+    -- Состояния, в которых реакция Hit1..3 не должна проигрываться (используется, если
+    -- реакция не должна выглядеть как прерывание текущего действия).
     SuppressHitDuring = {
         Attacking = true,
         Dodging = true,
@@ -118,6 +137,115 @@ function CombatAnimationConfig.GetAnimationId(slot, weaponId)
     end
 
     return nil
+end
+
+-- Случайный слот реакции на урон среди НАЗНАЧЕННЫХ Hit1..3, не равный lastSlot
+-- (если вариантов больше одного). nil, если ни одна анимация не назначена.
+-- random - необязательная функция () -> число [0, 1) (для тестов); по умолчанию math.random.
+function CombatAnimationConfig.PickHitSlot(weaponId, lastSlot, random)
+    local candidates = {}
+
+    for _, slot in ipairs(CombatAnimationConfig.HitSlots) do
+        if CombatAnimationConfig.GetAnimationId(slot, weaponId) then
+            table.insert(candidates, slot)
+        end
+    end
+
+    if #candidates > 1 then
+        local index = table.find(candidates, lastSlot)
+
+        if index then
+            table.remove(candidates, index)
+        end
+    end
+
+    if #candidates == 0 then
+        return nil
+    end
+
+    local roll = random and random() or math.random()
+
+    return candidates[math.min(#candidates, math.floor(roll * #candidates) + 1)]
+end
+
+-- Слоты, которые использует код боевых анимаций (клиент игрока и NPC).
+CombatAnimationConfig.RequiredSlots = {
+    "Attack", "BlockStart", "BlockLoop", "BlockHit", "Parry", "Parried",
+    "Hit1", "Hit2", "Hit3", "Stunned", "Dodge",
+}
+
+-- Проверка согласованности конфигурации. Возвращает список проблем (пустой = всё в порядке).
+function CombatAnimationConfig.Validate()
+    local problems = {}
+
+    local function add(...)
+        table.insert(problems, table.concat({ ... }, " "))
+    end
+
+    for _, slot in ipairs(CombatAnimationConfig.RequiredSlots) do
+        if not CombatAnimationConfig.Slots[slot] then
+            add("slot", slot, "is used by the animation code but missing in Slots")
+        end
+    end
+
+    for slot, settings in pairs(CombatAnimationConfig.Slots) do
+        if typeof(settings.Priority) ~= "EnumItem"
+            or settings.Priority.EnumType ~= Enum.AnimationPriority
+        then
+            add("Slots." .. slot, "has no valid Priority")
+        end
+
+        if type(settings.Looped) ~= "boolean" then
+            add("Slots." .. slot, "has no boolean Looped")
+        end
+
+        if CombatAnimationConfig.Common[slot] == nil then
+            add("Common has no entry for slot", slot, "(use \"rbxassetid://0\" as placeholder)")
+        end
+    end
+
+    for slot in pairs(CombatAnimationConfig.Common) do
+        if not CombatAnimationConfig.Slots[slot] then
+            add("Common." .. slot, "is not a known slot (typo?)")
+        end
+    end
+
+    for weaponId, animations in pairs(CombatAnimationConfig.Weapons) do
+        if not CombatConfig.Weapons[weaponId] then
+            add("Weapons." .. weaponId, "is not a weapon from CombatConfig")
+        end
+
+        for slot in pairs(animations) do
+            if not CombatAnimationConfig.Slots[slot] then
+                add("Weapons." .. weaponId .. "." .. slot, "is not a known slot (typo?)")
+            end
+        end
+    end
+
+    for _, slot in ipairs(CombatAnimationConfig.HitSlots) do
+        if not CombatAnimationConfig.Slots[slot] then
+            add("HitSlots contains unknown slot", slot)
+        end
+    end
+
+    for state in pairs(CombatAnimationConfig.Settings.SuppressHitDuring) do
+        if type(CombatStates[state]) ~= "string" then
+            add("Settings.SuppressHitDuring has unknown state", state)
+        end
+    end
+
+    return problems
+end
+
+-- Печатает проблемы конфигурации (warn). Возвращает true, если проблем нет.
+function CombatAnimationConfig.WarnIfInvalid(owner)
+    local problems = CombatAnimationConfig.Validate()
+
+    for _, problem in ipairs(problems) do
+        warn("[CombatAnimationConfig]", owner or "", problem)
+    end
+
+    return #problems == 0
 end
 
 return CombatAnimationConfig

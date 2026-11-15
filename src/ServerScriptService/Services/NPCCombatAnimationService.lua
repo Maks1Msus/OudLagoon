@@ -8,7 +8,12 @@
 --   Blocking                 -> BlockStart, затем BlockLoop
 --   Parried (удар парирован) -> Parry, затем возврат в BlockLoop
 --   Blocked (удар в блок)    -> BlockHit, затем возврат в BlockLoop
---   Hit (полный урон)        -> Hit (кроме состояний из Settings.SuppressHitDuring)
+--   Hit (полный урон)        -> Hit1 / Hit2 / Hit3: случайный вариант без повтора подряд
+--                               (у каждого NPC своя память)
+--   Stunned (переход)        -> только останавливает позу блока/атаки; анимацию Stunned
+--                               состояние само НЕ запускает
+--   PlayReaction(model, "Parried" | "Stunned") -> явные реакции (CombatService): удар NPC
+--                               парировали / NPC оглушила способность
 --   Idle / Dead              -> анимация останавливается
 --   Attacking (новый удар)   -> Attack (одна анимация на все фазы удара)
 --
@@ -36,6 +41,16 @@ local BLOCK_SLOTS = {
     BlockLoop = true,
     BlockHit = true,
     Parry = true,
+}
+
+-- Реакции, которые смена состояния на Stunned не должна обрывать: удар сначала запускает Hit1..3
+-- (OnDamageApplied), и лишь затем сервер оглушает цель.
+local KEEP_ON_STUN = {
+    Hit1 = true,
+    Hit2 = true,
+    Hit3 = true,
+    Parried = true,
+    Stunned = true,
 }
 
 local Entries = {} -- [model] = entry
@@ -237,7 +252,10 @@ local function OnStateChanged(character, newState, oldState)
     elseif newState == CombatStates.Idle or newState == CombatStates.Dead then
         StopActive(entry)
     elseif newState == CombatStates.Stunned then
-        PlaySlot(entry, "Stun")
+        -- Анимацию Stunned не запускаем: только убираем позу блока/атаки
+        if not (entry.ActiveSlot and KEEP_ON_STUN[entry.ActiveSlot]) then
+            StopActive(entry)
+        end
     end
 end
 
@@ -265,7 +283,13 @@ local function OnDamageApplied(character, outcome)
         end
     elseif result == DamageResults.Hit then
         if not Settings.SuppressHitDuring[state] then
-            PlayReaction(entry, "Hit", backToBlock)
+            -- Свой вариант на каждый NPC: не повторяем предыдущий
+            local slot = CombatAnimationConfig.PickHitSlot(CombatConfig.UnarmedId, entry.LastHitSlot)
+
+            if slot then
+                entry.LastHitSlot = slot
+                PlayReaction(entry, slot, backToBlock)
+            end
         end
     end
 end
@@ -301,6 +325,7 @@ function NPCCombatAnimationService:Register(model)
         Animations = {},
         ActiveTrack = nil,
         ActiveSlot = nil,
+        LastHitSlot = nil,
         Token = 0,
     }
 
@@ -357,6 +382,8 @@ function NPCCombatAnimationService:Init()
     end
 
     initialized = true
+
+    CombatAnimationConfig.WarnIfInvalid("server")
 
     CombatStateService:OnStateChanged(OnStateChanged)
     CombatStateService:OnDamageApplied(OnDamageApplied)

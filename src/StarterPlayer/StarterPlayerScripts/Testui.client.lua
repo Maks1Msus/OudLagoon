@@ -219,6 +219,8 @@ if RunService:IsStudio() then
         { "Spawn R6 dummy", "SpawnDummy", nil },
         { "Spawn blocking dummy", "SpawnBlockingDummy", nil },
         { "Spawn aggressive dummy", "SpawnAggressiveDummy", nil },
+        { "Stun self (ability)", "StunSelf", nil },
+        { "Stun dummies (ability)", "StunDummies", nil },
         { "Remove last dummy", "RemoveDummy", nil },
         { "Remove all dummies", "RemoveAllDummies", nil },
         { "Give sword", "GiveSword", nil },

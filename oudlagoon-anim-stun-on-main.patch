@@ -1,0 +1,541 @@
+From 6b639ee50ea7523b8f080925c6b088c8ea4a4458 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sun, 15 Nov 2026 12:27:50 +0500
+Subject: [PATCH] Fix combat animations on top of main: Hit1-3 picker, defender
+ Parry, NPC Parried, slot validation, ability Stunned event
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01DLMaP4V7LcPHCrxoi4fJm8
+---
+ .../Shared/Config/CombatAnimationConfig.lua   | 136 +++++++++++++++++-
+ .../Services/CombatService.lua                |  41 +++++-
+ .../Services/DebugService.lua                 |  12 ++
+ .../Services/NPCCombatAnimationService.lua    |  33 ++++-
+ .../Services/TrainingDummyService.lua         |  13 ++
+ .../CombatAnimationController.client.lua      |  58 +++++++-
+ .../StarterPlayerScripts/Testui.client.lua    |   2 +
+ 7 files changed, 278 insertions(+), 17 deletions(-)
+
+diff --git a/src/ReplicatedStorage/Shared/Config/CombatAnimationConfig.lua b/src/ReplicatedStorage/Shared/Config/CombatAnimationConfig.lua
+index 5080324..7b03f46 100644
+--- a/src/ReplicatedStorage/Shared/Config/CombatAnimationConfig.lua
++++ b/src/ReplicatedStorage/Shared/Config/CombatAnimationConfig.lua
+@@ -20,10 +20,26 @@
+ -- РЕАКЦИИ (накладываются поверх текущей позы и не меняют состояние):
+ --   Parry    - успешное парирование; прерывает блок, затем снова включается BlockLoop;
+ --   BlockHit - короткая реакция на удар, принятый в блок;
+---   Hit      - получение полного урона.
++--   Hit1..3  - получение полного урона; вариант выбирается случайно, без повтора подряд
++--              (PickHitSlot), берутся только назначенные;
++--   Parried  - реакция АТАКУЮЩЕГО, чей удар парировали (клиент игрока и NPC);
++--   Stunned  - оглушение СПОСОБНОСТЬЮ. Играет только по явному событию (CombatFeedback,
++--              Kind = "Reaction", Reaction = "Stunned" / PlayReaction у NPC), а не при
++--              любом переходе в состояние Stunned: оглушение от удара и парирования
++--              показывается реакциями Hit1..3 и Parried.
++--
++-- Приоритеты: блок (Action) < Attack (Action2) < BlockHit и Hit1..3 (Action3) <
++-- Parry, Parried, Stunned (Action4). Parry выше BlockHit, чтобы реакция на предыдущий
++-- удар не перекрывала парирование.
++
++local CombatConfig = require(script.Parent.CombatConfig)
++local CombatStates = require(script.Parent.Parent.Constants.CombatStates)
+ 
+ local CombatAnimationConfig = {}
+ 
++-- Слоты реакции на полный урон (из них PickHitSlot выбирает случайный).
++CombatAnimationConfig.HitSlots = { "Hit1", "Hit2", "Hit3" }
++
+ -- Слоты: что именно можно проиграть и как.
+ -- Priority - приоритет AnimationTrack (перекрывает приоритет, заданный в самом ассете).
+ -- Looped   - зацикливать ли анимацию.
+@@ -34,6 +50,9 @@ CombatAnimationConfig.Slots = {
+     BlockLoop = { Priority = Enum.AnimationPriority.Action, Looped = true },
+     BlockHit = { Priority = Enum.AnimationPriority.Action3, Looped = false },
+ 
++    -- Парирование (защищающийся). Должно быть выше BlockHit и блока.
++    Parry = { Priority = Enum.AnimationPriority.Action4, Looped = false },
++
+     Parried = { Priority = Enum.AnimationPriority.Action4, Looped = false },
+ 
+     Hit1 = { Priority = Enum.AnimationPriority.Action3, Looped = false },
+@@ -79,8 +98,8 @@ CombatAnimationConfig.Settings = {
+     -- Даёт плавный переход без рывка: две анимации перекрываются на это время.
+     LoopBlendTime = 0.1,
+ 
+-    -- В этих состояниях реакция Hit не проигрывается: сервер удар не прерывает
+-    -- (оглушения от попадания пока нет), поэтому реакция выглядела бы как прерывание.
++    -- Состояния, в которых реакция Hit1..3 не должна проигрываться (используется, если
++    -- реакция не должна выглядеть как прерывание текущего действия).
+     SuppressHitDuring = {
+         Attacking = true,
+         Dodging = true,
+@@ -120,4 +139,113 @@ function CombatAnimationConfig.GetAnimationId(slot, weaponId)
+     return nil
+ end
+ 
+-return CombatAnimationConfig
+\ No newline at end of file
++-- Случайный слот реакции на урон среди НАЗНАЧЕННЫХ Hit1..3, не равный lastSlot
++-- (если вариантов больше одного). nil, если ни одна анимация не назначена.
++-- random - необязательная функция () -> число [0, 1) (для тестов); по умолчанию math.random.
++function CombatAnimationConfig.PickHitSlot(weaponId, lastSlot, random)
++    local candidates = {}
++
++    for _, slot in ipairs(CombatAnimationConfig.HitSlots) do
++        if CombatAnimationConfig.GetAnimationId(slot, weaponId) then
++            table.insert(candidates, slot)
++        end
++    end
++
++    if #candidates > 1 then
++        local index = table.find(candidates, lastSlot)
++
++        if index then
++            table.remove(candidates, index)
++        end
++    end
++
++    if #candidates == 0 then
++        return nil
++    end
++
++    local roll = random and random() or math.random()
++
++    return candidates[math.min(#candidates, math.floor(roll * #candidates) + 1)]
++end
++
++-- Слоты, которые использует код боевых анимаций (клиент игрока и NPC).
++CombatAnimationConfig.RequiredSlots = {
++    "Attack", "BlockStart", "BlockLoop", "BlockHit", "Parry", "Parried",
++    "Hit1", "Hit2", "Hit3", "Stunned", "Dodge",
++}
++
++-- Проверка согласованности конфигурации. Возвращает список проблем (пустой = всё в порядке).
++function CombatAnimationConfig.Validate()
++    local problems = {}
++
++    local function add(...)
++        table.insert(problems, table.concat({ ... }, " "))
++    end
++
++    for _, slot in ipairs(CombatAnimationConfig.RequiredSlots) do
++        if not CombatAnimationConfig.Slots[slot] then
++            add("slot", slot, "is used by the animation code but missing in Slots")
++        end
++    end
++
++    for slot, settings in pairs(CombatAnimationConfig.Slots) do
++        if typeof(settings.Priority) ~= "EnumItem"
++            or settings.Priority.EnumType ~= Enum.AnimationPriority
++        then
++            add("Slots." .. slot, "has no valid Priority")
++        end
++
++        if type(settings.Looped) ~= "boolean" then
++            add("Slots." .. slot, "has no boolean Looped")
++        end
++
++        if CombatAnimationConfig.Common[slot] == nil then
++            add("Common has no entry for slot", slot, "(use \"rbxassetid://0\" as placeholder)")
++        end
++    end
++
++    for slot in pairs(CombatAnimationConfig.Common) do
++        if not CombatAnimationConfig.Slots[slot] then
++            add("Common." .. slot, "is not a known slot (typo?)")
++        end
++    end
++
++    for weaponId, animations in pairs(CombatAnimationConfig.Weapons) do
++        if not CombatConfig.Weapons[weaponId] then
++            add("Weapons." .. weaponId, "is not a weapon from CombatConfig")
++        end
++
++        for slot in pairs(animations) do
++            if not CombatAnimationConfig.Slots[slot] then
++                add("Weapons." .. weaponId .. "." .. slot, "is not a known slot (typo?)")
++            end
++        end
++    end
++
++    for _, slot in ipairs(CombatAnimationConfig.HitSlots) do
++        if not CombatAnimationConfig.Slots[slot] then
++            add("HitSlots contains unknown slot", slot)
++        end
++    end
++
++    for state in pairs(CombatAnimationConfig.Settings.SuppressHitDuring) do
++        if type(CombatStates[state]) ~= "string" then
++            add("Settings.SuppressHitDuring has unknown state", state)
++        end
++    end
++
++    return problems
++end
++
++-- Печатает проблемы конфигурации (warn). Возвращает true, если проблем нет.
++function CombatAnimationConfig.WarnIfInvalid(owner)
++    local problems = CombatAnimationConfig.Validate()
++
++    for _, problem in ipairs(problems) do
++        warn("[CombatAnimationConfig]", owner or "", problem)
++    end
++
++    return #problems == 0
++end
++
++return CombatAnimationConfig
+diff --git a/src/ServerScriptService/Services/CombatService.lua b/src/ServerScriptService/Services/CombatService.lua
+index 419ecae..a92d68e 100644
+--- a/src/ServerScriptService/Services/CombatService.lua
++++ b/src/ServerScriptService/Services/CombatService.lua
+@@ -20,6 +20,7 @@ local CombatStates = require(
+ local DataService = require(script.Parent.DataService)
+ local RemoteService = require(script.Parent.RemoteService)
+ local CombatStateService = require(script.Parent.CombatStateService)
++local NPCCombatAnimationService = require(script.Parent.NPCCombatAnimationService)
+ 
+ local CombatService = {}
+ 
+@@ -36,6 +37,40 @@ local function Log(...)
+     end
+ end
+ 
++-- ОГЛУШЕНИЕ СПОСОБНОСТЬЮ -------------------------------------------------
++
++-- Оглушает персонажа (игрока или NPC) способностью и сообщает об этом явным событием:
++-- игроку - CombatFeedback { Kind = "Reaction", Reaction = "Stunned" }, NPC - реакция
++-- Stunned его Animator. Только это событие включает анимацию Stunned: оглушение от удара и
++-- парирования показывается реакциями Hit1..3 и Parried, а не Stunned.
++-- duration - секунды (по умолчанию CombatStateConfig.Stun.AbilityDuration; ограничивается
++-- Stun.MaxDuration). Правила ApplyStun (иммунитет, уже оглушён, смерть) действуют как обычно.
++-- Возвращает true, <TransitionId> либо false, <причина>.
++function CombatService:ApplyAbilityStun(character, duration)
++    local ok, result = CombatStateService:ApplyStun(
++        character,
++        duration or CombatStateConfig.Stun.AbilityDuration,
++        "Ability"
++    )
++
++    if not ok then
++        return false, result
++    end
++
++    local owner = Players:GetPlayerFromCharacter(character)
++
++    if owner then
++        RemoteService:GetEvent("CombatFeedback"):FireClient(owner, {
++            Kind = "Reaction",
++            Reaction = "Stunned",
++        })
++    else
++        NPCCombatAnimationService:PlayReaction(character, "Stunned")
++    end
++
++    return true, result
++end
++
+ -- ОРУЖИЕ ----------------------------------------------------------------
+ 
+ -- Оружие определяется сервером по экипированному Tool с атрибутом CombatWeaponId.
+@@ -354,10 +389,10 @@ function CombatService:RunActiveWindow(attack)
+                             Kind = "Reaction",
+                             Reaction = "Parried",
+                         })
++                    else
++                        -- Атакует NPC: реакцию Parried проигрывает его Animator на сервере
++                        NPCCombatAnimationService:PlayReaction(character, "Parried")
+                     end
+-
+-                    -- Для NPC здесь потребуется вызов NPCCombatAnimationService.
+-                    -- Его API подключим после проверки самого сервиса.
+                 end
+ 
+                 -- Damage - фактически нанесённый урон; Result - Hit | Blocked | Parried.
+diff --git a/src/ServerScriptService/Services/DebugService.lua b/src/ServerScriptService/Services/DebugService.lua
+index fef66f1..0c5565f 100644
+--- a/src/ServerScriptService/Services/DebugService.lua
++++ b/src/ServerScriptService/Services/DebugService.lua
+@@ -6,6 +6,7 @@ local CombatConfig = require(
+     ReplicatedStorage.Shared.Config.CombatConfig
+ )
+ local TrainingDummyService = require(script.Parent.TrainingDummyService)
++local CombatService = require(script.Parent.CombatService)
+ local DataService = require(script.Parent.DataService)
+ local RemoteService = require(script.Parent.RemoteService)
+ local PlayerService = require(script.Parent.PlayerService)
+@@ -118,6 +119,17 @@ function Actions.SpawnAggressiveDummy(player)
+     TrainingDummyService:SpawnForPlayer(player, "Aggressive")
+ end
+ 
++-- Оглушение способностью: проверка явного события Stunned у игрока и у манекенов.
++function Actions.StunSelf(player)
++    if player.Character then
++        CombatService:ApplyAbilityStun(player.Character)
++    end
++end
++
++function Actions.StunDummies()
++    TrainingDummyService:StunAll()
++end
++
+ function Actions.RemoveDummy()
+     TrainingDummyService:RemoveLast()
+ end
+diff --git a/src/ServerScriptService/Services/NPCCombatAnimationService.lua b/src/ServerScriptService/Services/NPCCombatAnimationService.lua
+index a2d0ba9..c27ccef 100644
+--- a/src/ServerScriptService/Services/NPCCombatAnimationService.lua
++++ b/src/ServerScriptService/Services/NPCCombatAnimationService.lua
+@@ -8,7 +8,12 @@
+ --   Blocking                 -> BlockStart, затем BlockLoop
+ --   Parried (удар парирован) -> Parry, затем возврат в BlockLoop
+ --   Blocked (удар в блок)    -> BlockHit, затем возврат в BlockLoop
+---   Hit (полный урон)        -> Hit (кроме состояний из Settings.SuppressHitDuring)
++--   Hit (полный урон)        -> Hit1 / Hit2 / Hit3: случайный вариант без повтора подряд
++--                               (у каждого NPC своя память)
++--   Stunned (переход)        -> только останавливает позу блока/атаки; анимацию Stunned
++--                               состояние само НЕ запускает
++--   PlayReaction(model, "Parried" | "Stunned") -> явные реакции (CombatService): удар NPC
++--                               парировали / NPC оглушила способность
+ --   Idle / Dead              -> анимация останавливается
+ --   Attacking (новый удар)   -> Attack (одна анимация на все фазы удара)
+ --
+@@ -38,6 +43,16 @@ local BLOCK_SLOTS = {
+     Parry = true,
+ }
+ 
++-- Реакции, которые смена состояния на Stunned не должна обрывать: удар сначала запускает Hit1..3
++-- (OnDamageApplied), и лишь затем сервер оглушает цель.
++local KEEP_ON_STUN = {
++    Hit1 = true,
++    Hit2 = true,
++    Hit3 = true,
++    Parried = true,
++    Stunned = true,
++}
++
+ local Entries = {} -- [model] = entry
+ local initialized = false
+ 
+@@ -237,7 +252,10 @@ local function OnStateChanged(character, newState, oldState)
+     elseif newState == CombatStates.Idle or newState == CombatStates.Dead then
+         StopActive(entry)
+     elseif newState == CombatStates.Stunned then
+-        PlaySlot(entry, "Stun")
++        -- Анимацию Stunned не запускаем: только убираем позу блока/атаки
++        if not (entry.ActiveSlot and KEEP_ON_STUN[entry.ActiveSlot]) then
++            StopActive(entry)
++        end
+     end
+ end
+ 
+@@ -265,7 +283,13 @@ local function OnDamageApplied(character, outcome)
+         end
+     elseif result == DamageResults.Hit then
+         if not Settings.SuppressHitDuring[state] then
+-            PlayReaction(entry, "Hit", backToBlock)
++            -- Свой вариант на каждый NPC: не повторяем предыдущий
++            local slot = CombatAnimationConfig.PickHitSlot(CombatConfig.UnarmedId, entry.LastHitSlot)
++
++            if slot then
++                entry.LastHitSlot = slot
++                PlayReaction(entry, slot, backToBlock)
++            end
+         end
+     end
+ end
+@@ -301,6 +325,7 @@ function NPCCombatAnimationService:Register(model)
+         Animations = {},
+         ActiveTrack = nil,
+         ActiveSlot = nil,
++        LastHitSlot = nil,
+         Token = 0,
+     }
+ 
+@@ -358,6 +383,8 @@ function NPCCombatAnimationService:Init()
+ 
+     initialized = true
+ 
++    CombatAnimationConfig.WarnIfInvalid("server")
++
+     CombatStateService:OnStateChanged(OnStateChanged)
+     CombatStateService:OnDamageApplied(OnDamageApplied)
+ 
+diff --git a/src/ServerScriptService/Services/TrainingDummyService.lua b/src/ServerScriptService/Services/TrainingDummyService.lua
+index 665bd38..7112f76 100644
+--- a/src/ServerScriptService/Services/TrainingDummyService.lua
++++ b/src/ServerScriptService/Services/TrainingDummyService.lua
+@@ -394,6 +394,19 @@ function TrainingDummyService:RemoveAll()
+     return removedCount
+ end
+ 
++-- Оглушает всех манекенов способностью (явное событие Stunned). Возвращает число оглушённых.
++function TrainingDummyService:StunAll(duration)
++    local count = 0
++
++    for _, dummy in ipairs(GetDummies()) do
++        if CombatService:ApplyAbilityStun(dummy, duration) then
++            count += 1
++        end
++    end
++
++    return count
++end
++
+ function TrainingDummyService:GetCount()
+     return #GetDummies()
+ end
+diff --git a/src/StarterPlayer/StarterPlayerScripts/CombatAnimationController.client.lua b/src/StarterPlayer/StarterPlayerScripts/CombatAnimationController.client.lua
+index 4e024e3..e43233b 100644
+--- a/src/StarterPlayer/StarterPlayerScripts/CombatAnimationController.client.lua
++++ b/src/StarterPlayer/StarterPlayerScripts/CombatAnimationController.client.lua
+@@ -10,7 +10,8 @@
+ -- Соответствие состояний и анимаций:
+ --   Attacking (переход из другого состояния) -> Attack (одна анимация на все фазы удара)
+ --   Blocking                                 -> BlockStart, затем BlockLoop (пока держится блок)
+---   Stunned                                  -> Stun
++--   Stunned (переход состояния)              -> текущая поза (блок, атака) останавливается;
++--                                               анимацию Stunned состояние само НЕ запускает
+ --   Dodging                                  -> Dodge
+ --   Idle / Dead                              -> боевая анимация останавливается
+ -- Смена фаз атаки (Startup/Active/Recovery) анимацию не перезапускает.
+@@ -18,7 +19,12 @@
+ -- Результат удара по своему персонажу (CombatFeedback, Kind = "Received"):
+ --   Parried -> Parry заменяет блок, после неё снова включается BlockLoop;
+ --   Blocked -> BlockHit накладывается поверх блока (блок не прерывается);
+---   Hit     -> Hit накладывается поверх текущей позы (кроме Settings.SuppressHitDuring).
++--   Hit     -> один из Hit1..3 (getRandomHitSlot, без повтора подряд) поверх текущей позы.
++--
++-- Явные реакции (CombatFeedback, Kind = "Reaction"):
++--   Parried - мой удар парировали;
++--   Stunned - меня оглушила способность (CombatService:ApplyAbilityStun). Это единственное,
++--             что включает анимацию Stunned. Оглушение от удара и парирования её не включает.
+ --
+ -- Восстановление (Sync): ответ на Sync помечен Sync = true и содержит Elapsed (сколько секунд
+ -- состояние длится на сервере). Анимация запускается с этого места. Если Sync пришёл раньше,
+@@ -48,7 +54,8 @@ local SLOT_BLOCK_START = "BlockStart"
+ local SLOT_BLOCK_LOOP = "BlockLoop"
+ local SLOT_BLOCK_HIT = "BlockHit"
+ local SLOT_PARRY = "Parry"
+-local SLOT_HIT = "Hit"
++local SLOT_PARRIED = "Parried"
++local SLOT_STUNNED = "Stunned"
+ 
+ -- Слоты, из которых состоит блок (для проверки "блок уже показывается")
+ local BLOCK_SLOTS = {
+@@ -70,6 +77,9 @@ local activeTrack = nil
+ -- Короткая реакция (Hit / BlockHit), накладывается поверх активной анимации
+ local reactionTrack = nil
+ 
++-- Последний показанный вариант Hit (чтобы одна и та же реакция не шла подряд)
++local lastHitSlot = nil
++
+ -- Последнее состояние, сообщённое сервером (нужно, чтобы решить, что делать после Parry)
+ local currentState = CombatStates.Idle
+ 
+@@ -177,6 +187,17 @@ local function stopReaction(fadeTime)
+     reactionTrack = nil
+ end
+ 
++-- Случайный слот Hit1..3 среди назначенных, не равный предыдущему. nil, если анимаций нет.
++local function getRandomHitSlot(weaponId)
++    local slot = CombatAnimationConfig.PickHitSlot(weaponId, lastHitSlot)
++
++    if slot then
++        lastHitSlot = slot
++    end
++
++    return slot
++end
++
+ -- Забывает все треки текущего персонажа (респавн, удаление персонажа).
+ local function resetTracks()
+     stopActive(0)
+@@ -200,6 +221,7 @@ local function resetTracks()
+     animator = nil
+     characterHumanoid = nil
+     pendingPayload = nil
++    lastHitSlot = nil
+     currentState = CombatStates.Idle
+ end
+ 
+@@ -438,6 +460,12 @@ local function applyState(payload, restoring)
+         end
+     elseif state == CombatStates.Blocking then
+         enterBlock(weaponId, restoring and elapsed or 0)
++    elseif state == CombatStates.Stunned then
++        -- Анимацию Stunned состояние не запускает. Но поза блока/атаки не должна оставаться.
++        -- Реакции Parried/Stunned могли прийти раньше этого сообщения (разные события): их не трогаем.
++        if activeSlot ~= SLOT_PARRIED and activeSlot ~= SLOT_STUNNED then
++            stopActive()
++        end
+     elseif state == CombatStates.Dodging then
+         playSlot("Dodge", weaponId, restoring and elapsed or nil)
+     elseif state == CombatStates.Idle then
+@@ -466,6 +494,8 @@ end
+ 
+ CombatStateChanged.OnClientEvent:Connect(onStateChanged)
+ 
++CombatAnimationConfig.WarnIfInvalid("client")
++
+ -- РЕЗУЛЬТАТ УДАРА ПО СВОЕМУ ПЕРСОНАЖУ -------------------------------------
+ 
+ local function onFeedback(payload)
+@@ -481,9 +511,11 @@ local function onFeedback(payload)
+ 
+     if payload.Kind == "Reaction" then
+         if payload.Reaction == "Parried" then
+-            playSlot("Parried", weaponId)
++            playSlot(SLOT_PARRIED, weaponId)
+         elseif payload.Reaction == "Stunned" then
+-            playSlot("Stunned", weaponId)
++            if not playSlot(SLOT_STUNNED, weaponId) and activeSlot ~= SLOT_STUNNED then
++                stopActive() -- анимации нет: хотя бы не оставляем позу блока/атаки
++            end
+         end
+ 
+         return
+@@ -493,13 +525,25 @@ local function onFeedback(payload)
+         return
+     end
+ 
+-    if payload.Result == DamageResults.Blocked then
++    if payload.Result == DamageResults.Parried then
++        -- Защищающийся парировал удар: Parry заменяет блок, затем снова BlockLoop.
++        -- Без назначенной анимации блок не трогаем. Реакция BlockHit гасится, чтобы не
++        -- перекрывать Parry.
++        if currentState == CombatStates.Blocking and hasAnimation(SLOT_PARRY, weaponId) then
++            stopReaction(0)
++
++            playSlot(SLOT_PARRY, weaponId, nil, function()
++                startBlockLoop(weaponId)
++            end)
++        end
++
++    elseif payload.Result == DamageResults.Blocked then
+         if currentState == CombatStates.Blocking then
+             playReaction(SLOT_BLOCK_HIT, weaponId)
+         end
+ 
+     elseif payload.Result == DamageResults.Hit then
+-        local hitSlot = getRandomHitSlot()
++        local hitSlot = getRandomHitSlot(weaponId)
+ 
+         if hitSlot then
+             playReaction(hitSlot, weaponId)
+diff --git a/src/StarterPlayer/StarterPlayerScripts/Testui.client.lua b/src/StarterPlayer/StarterPlayerScripts/Testui.client.lua
+index 6d37c0a..3959ce8 100644
+--- a/src/StarterPlayer/StarterPlayerScripts/Testui.client.lua
++++ b/src/StarterPlayer/StarterPlayerScripts/Testui.client.lua
+@@ -219,6 +219,8 @@ if RunService:IsStudio() then
+         { "Spawn R6 dummy", "SpawnDummy", nil },
+         { "Spawn blocking dummy", "SpawnBlockingDummy", nil },
+         { "Spawn aggressive dummy", "SpawnAggressiveDummy", nil },
++        { "Stun self (ability)", "StunSelf", nil },
++        { "Stun dummies (ability)", "StunDummies", nil },
+         { "Remove last dummy", "RemoveDummy", nil },
+         { "Remove all dummies", "RemoveAllDummies", nil },
+         { "Give sword", "GiveSword", nil },
+-- 
+2.43.0
+

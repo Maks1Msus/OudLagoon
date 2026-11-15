@@ -10,7 +10,8 @@
 -- Соответствие состояний и анимаций:
 --   Attacking (переход из другого состояния) -> Attack (одна анимация на все фазы удара)
 --   Blocking                                 -> BlockStart, затем BlockLoop (пока держится блок)
---   Stunned                                  -> Stun
+--   Stunned (переход состояния)              -> текущая поза (блок, атака) останавливается;
+--                                               анимацию Stunned состояние само НЕ запускает
 --   Dodging                                  -> Dodge
 --   Idle / Dead                              -> боевая анимация останавливается
 -- Смена фаз атаки (Startup/Active/Recovery) анимацию не перезапускает.
@@ -18,7 +19,12 @@
 -- Результат удара по своему персонажу (CombatFeedback, Kind = "Received"):
 --   Parried -> Parry заменяет блок, после неё снова включается BlockLoop;
 --   Blocked -> BlockHit накладывается поверх блока (блок не прерывается);
---   Hit     -> Hit накладывается поверх текущей позы (кроме Settings.SuppressHitDuring).
+--   Hit     -> один из Hit1..3 (getRandomHitSlot, без повтора подряд) поверх текущей позы.
+--
+-- Явные реакции (CombatFeedback, Kind = "Reaction"):
+--   Parried - мой удар парировали;
+--   Stunned - меня оглушила способность (CombatService:ApplyAbilityStun). Это единственное,
+--             что включает анимацию Stunned. Оглушение от удара и парирования её не включает.
 --
 -- Восстановление (Sync): ответ на Sync помечен Sync = true и содержит Elapsed (сколько секунд
 -- состояние длится на сервере). Анимация запускается с этого места. Если Sync пришёл раньше,
@@ -48,7 +54,8 @@ local SLOT_BLOCK_START = "BlockStart"
 local SLOT_BLOCK_LOOP = "BlockLoop"
 local SLOT_BLOCK_HIT = "BlockHit"
 local SLOT_PARRY = "Parry"
-local SLOT_HIT = "Hit"
+local SLOT_PARRIED = "Parried"
+local SLOT_STUNNED = "Stunned"
 
 -- Слоты, из которых состоит блок (для проверки "блок уже показывается")
 local BLOCK_SLOTS = {
@@ -69,6 +76,9 @@ local activeTrack = nil
 
 -- Короткая реакция (Hit / BlockHit), накладывается поверх активной анимации
 local reactionTrack = nil
+
+-- Последний показанный вариант Hit (чтобы одна и та же реакция не шла подряд)
+local lastHitSlot = nil
 
 -- Последнее состояние, сообщённое сервером (нужно, чтобы решить, что делать после Parry)
 local currentState = CombatStates.Idle
@@ -177,6 +187,17 @@ local function stopReaction(fadeTime)
     reactionTrack = nil
 end
 
+-- Случайный слот Hit1..3 среди назначенных, не равный предыдущему. nil, если анимаций нет.
+local function getRandomHitSlot(weaponId)
+    local slot = CombatAnimationConfig.PickHitSlot(weaponId, lastHitSlot)
+
+    if slot then
+        lastHitSlot = slot
+    end
+
+    return slot
+end
+
 -- Забывает все треки текущего персонажа (респавн, удаление персонажа).
 local function resetTracks()
     stopActive(0)
@@ -200,6 +221,7 @@ local function resetTracks()
     animator = nil
     characterHumanoid = nil
     pendingPayload = nil
+    lastHitSlot = nil
     currentState = CombatStates.Idle
 end
 
@@ -438,6 +460,12 @@ local function applyState(payload, restoring)
         end
     elseif state == CombatStates.Blocking then
         enterBlock(weaponId, restoring and elapsed or 0)
+    elseif state == CombatStates.Stunned then
+        -- Анимацию Stunned состояние не запускает. Но поза блока/атаки не должна оставаться.
+        -- Реакции Parried/Stunned могли прийти раньше этого сообщения (разные события): их не трогаем.
+        if activeSlot ~= SLOT_PARRIED and activeSlot ~= SLOT_STUNNED then
+            stopActive()
+        end
     elseif state == CombatStates.Dodging then
         playSlot("Dodge", weaponId, restoring and elapsed or nil)
     elseif state == CombatStates.Idle then
@@ -466,6 +494,8 @@ end
 
 CombatStateChanged.OnClientEvent:Connect(onStateChanged)
 
+CombatAnimationConfig.WarnIfInvalid("client")
+
 -- РЕЗУЛЬТАТ УДАРА ПО СВОЕМУ ПЕРСОНАЖУ -------------------------------------
 
 local function onFeedback(payload)
@@ -481,9 +511,11 @@ local function onFeedback(payload)
 
     if payload.Kind == "Reaction" then
         if payload.Reaction == "Parried" then
-            playSlot("Parried", weaponId)
+            playSlot(SLOT_PARRIED, weaponId)
         elseif payload.Reaction == "Stunned" then
-            playSlot("Stunned", weaponId)
+            if not playSlot(SLOT_STUNNED, weaponId) and activeSlot ~= SLOT_STUNNED then
+                stopActive() -- анимации нет: хотя бы не оставляем позу блока/атаки
+            end
         end
 
         return
@@ -493,13 +525,25 @@ local function onFeedback(payload)
         return
     end
 
-    if payload.Result == DamageResults.Blocked then
+    if payload.Result == DamageResults.Parried then
+        -- Защищающийся парировал удар: Parry заменяет блок, затем снова BlockLoop.
+        -- Без назначенной анимации блок не трогаем. Реакция BlockHit гасится, чтобы не
+        -- перекрывать Parry.
+        if currentState == CombatStates.Blocking and hasAnimation(SLOT_PARRY, weaponId) then
+            stopReaction(0)
+
+            playSlot(SLOT_PARRY, weaponId, nil, function()
+                startBlockLoop(weaponId)
+            end)
+        end
+
+    elseif payload.Result == DamageResults.Blocked then
         if currentState == CombatStates.Blocking then
             playReaction(SLOT_BLOCK_HIT, weaponId)
         end
 
     elseif payload.Result == DamageResults.Hit then
-        local hitSlot = getRandomHitSlot()
+        local hitSlot = getRandomHitSlot(weaponId)
 
         if hitSlot then
             playReaction(hitSlot, weaponId)

@@ -20,6 +20,7 @@ local CombatStates = require(
 local DataService = require(script.Parent.DataService)
 local RemoteService = require(script.Parent.RemoteService)
 local CombatStateService = require(script.Parent.CombatStateService)
+local NPCCombatAnimationService = require(script.Parent.NPCCombatAnimationService)
 
 local CombatService = {}
 
@@ -34,6 +35,40 @@ local function Log(...)
     if CombatConfig.DebugLogging then
         print("[CombatService]", ...)
     end
+end
+
+-- ОГЛУШЕНИЕ СПОСОБНОСТЬЮ -------------------------------------------------
+
+-- Оглушает персонажа (игрока или NPC) способностью и сообщает об этом явным событием:
+-- игроку - CombatFeedback { Kind = "Reaction", Reaction = "Stunned" }, NPC - реакция
+-- Stunned его Animator. Только это событие включает анимацию Stunned: оглушение от удара и
+-- парирования показывается реакциями Hit1..3 и Parried, а не Stunned.
+-- duration - секунды (по умолчанию CombatStateConfig.Stun.AbilityDuration; ограничивается
+-- Stun.MaxDuration). Правила ApplyStun (иммунитет, уже оглушён, смерть) действуют как обычно.
+-- Возвращает true, <TransitionId> либо false, <причина>.
+function CombatService:ApplyAbilityStun(character, duration)
+    local ok, result = CombatStateService:ApplyStun(
+        character,
+        duration or CombatStateConfig.Stun.AbilityDuration,
+        "Ability"
+    )
+
+    if not ok then
+        return false, result
+    end
+
+    local owner = Players:GetPlayerFromCharacter(character)
+
+    if owner then
+        RemoteService:GetEvent("CombatFeedback"):FireClient(owner, {
+            Kind = "Reaction",
+            Reaction = "Stunned",
+        })
+    else
+        NPCCombatAnimationService:PlayReaction(character, "Stunned")
+    end
+
+    return true, result
 end
 
 -- ОРУЖИЕ ----------------------------------------------------------------
@@ -354,10 +389,10 @@ function CombatService:RunActiveWindow(attack)
                             Kind = "Reaction",
                             Reaction = "Parried",
                         })
+                    else
+                        -- Атакует NPC: реакцию Parried проигрывает его Animator на сервере
+                        NPCCombatAnimationService:PlayReaction(character, "Parried")
                     end
-
-                    -- Для NPC здесь потребуется вызов NPCCombatAnimationService.
-                    -- Его API подключим после проверки самого сервиса.
                 end
 
                 -- Damage - фактически нанесённый урон; Result - Hit | Blocked | Parried.
