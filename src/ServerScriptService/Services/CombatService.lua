@@ -383,17 +383,19 @@ function CombatService:RunActiveWindow(attack)
                     and outcome.Damage > 0
                 then
                     CombatStateService:UseHitRecovery(character, attackId)
-                    if CanTrackCombo(attack) then
+                    local tracksCombo = CanTrackCombo(attack)
+                    if tracksCombo then
                         ComboService:ConfirmHit(character, attackId)
+                        CombatStateService:ApplyComboHitStun(
+                            target.Model, move.HitStun, character, attackId
+                        )
+                    else
+                        CombatStateService:ApplyStun(
+                            target.Model, move and move.HitStun or weapon.HitStun, "Hit"
+                        )
                     end
 
-                    CombatStateService:ApplyStun(
-                        target.Model,
-                        move and move.HitStun or weapon.HitStun,
-                        "Hit"
-                    )
-
-                    if CanTrackCombo(attack) then
+                    if tracksCombo then
                         local _, nextMove = ComboService:GetNextMove(character)
                         CombatStateService:RestrictComboCounterattack(
                             character, attackId, target.Model, nextMove ~= nil

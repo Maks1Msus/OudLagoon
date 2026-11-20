@@ -27,6 +27,8 @@ local CombatStates = require(
     ReplicatedStorage.Shared.Constants.CombatStates
 )
 
+local WeaponComboConfig = require(ReplicatedStorage.Shared.Config.WeaponComboConfig)
+
 local CombatStateService = {}
 
 local State = CombatStates
@@ -114,6 +116,8 @@ local function NewRecord()
         Dodge = nil,
         Stun = nil,
         StunImmuneUntil = 0,
+        ComboLockImmuneUntil = 0,
+        ComboLock = nil,
         AttackRestrictions = setmetatable({}, { __mode = "k" }),
         -- Кулдауны переживают смену состояния
         Cooldowns = { Dodge = 0 },
@@ -197,16 +201,26 @@ end
 -- ПРОВЕРКИ --------------------------------------------------------------
 
 -- Можно ли сейчас перейти в newState. Возвращает true либо false, <причина>.
+local function IsRestrictionCurrent(attacker, restriction)
+    local source = Records[attacker]
+    local humanoid = attacker:FindFirstChildOfClass("Humanoid")
+    local attack = source and source.Attack
+    return attacker.Parent and humanoid and humanoid.Health > 0
+        and source and source.State == State.Attacking and attack == restriction.Attack
+        and not (restriction.UntilRecovery and attack.Phase == Phase.Recovery)
+end
+
 local function IsComboAttackRestricted(record)
+    local now = os.clock()
     for attacker, restriction in pairs(record.AttackRestrictions) do
-        local source = Records[attacker]
-        local humanoid = attacker:FindFirstChildOfClass("Humanoid")
-        local attack = source and source.Attack
-        if attacker.Parent and humanoid and humanoid.Health > 0
-            and source.State == State.Attacking and attack == restriction.Attack
-            and not (restriction.UntilRecovery and attack.Phase == Phase.Recovery)
-        then
+        local current = IsRestrictionCurrent(attacker, restriction)
+        if current and (not restriction.ExpiresAt or now < restriction.ExpiresAt) then
             return true
+        end
+        if current and restriction.ComboLock and restriction.ExpiresAt
+            and now >= restriction.ExpiresAt
+        then
+            restriction.ComboLock.Exhausted = true
         end
         record.AttackRestrictions[attacker] = nil
     end
@@ -219,6 +233,7 @@ local function GetComboParryWindow(record, now)
         local source = Records[attacker]
         local humanoid = attacker:FindFirstChildOfClass("Humanoid")
         if window and not window.Consumed and now < window.EndsAt
+            and (not restriction.ExpiresAt or now < restriction.ExpiresAt)
             and attacker.Parent and humanoid and humanoid.Health > 0
             and source and source.State == State.Attacking
             and source.Attack == window.Attack and restriction.Attack == window.Attack
@@ -322,6 +337,16 @@ end
 --   Data     - данные подзаписи (для Attacking: Phase, CanBlockDuringRecovery,
 --              CanDodgeDuringRecovery, ...).
 -- Возвращает true, <TransitionId> либо false, <причина>.
+local function ScheduleStateEnd(self, character, record, duration)
+    local token = {}
+    record.DurationToken = token
+    self:Delay(character, duration, function()
+        if record.DurationToken == token then
+            self:Transition(character, State.Idle)
+        end
+    end)
+end
+
 local function Transition(self, character, newState, options, previousAttackId, comboParry)
     if not ValidStates[newState] then
         return false, "UnknownState"
@@ -360,8 +385,9 @@ local function Transition(self, character, newState, options, previousAttackId, 
     local oldKey = SubRecordKey[oldState]
 
     if oldState == State.Stunned then
-        record.StunImmuneUntil =
-            now + CombatStateConfig.Stun.PostStunImmunity
+        record.StunImmuneUntil = now + CombatStateConfig.Stun.PostStunImmunity
+        record.StunImmuneSource = record.Stun and record.Stun.Source
+        record.StunImmuneSeriesId = record.Stun and record.Stun.SeriesId
     end
 
     if oldKey then
@@ -371,6 +397,7 @@ local function Transition(self, character, newState, options, previousAttackId, 
     transitionCounter += 1
 
     record.TransitionId = transitionCounter
+    record.DurationToken = nil
     record.State = newState
     record.StateStartedAt = now
     record.StateEndsAt = options.Duration and (now + options.Duration) or nil
@@ -384,6 +411,8 @@ local function Transition(self, character, newState, options, previousAttackId, 
             attackCounter += 1
 
             data.AttackId = attackCounter
+            data.SeriesId = previousAttackId and (oldAttack.SeriesId or oldAttack.AttackId)
+                or data.AttackId
             data.Phase = data.Phase or Phase.Startup
             data.AnimationPhaseStartedAt = workspace:GetServerTimeNow()
             data.PhaseStartedAt = now
@@ -420,9 +449,7 @@ local function Transition(self, character, newState, options, previousAttackId, 
     end
 
     if options.Duration then
-        self:Delay(character, options.Duration, function()
-            self:Transition(character, State.Idle)
-        end)
+        ScheduleStateEnd(self, character, record, options.Duration)
     end
 
     Log(character.Name, oldState, "->", newState, "#" .. record.TransitionId)
@@ -543,6 +570,140 @@ function CombatStateService:ApplyStun(character, duration, source)
         Data = {
             Source = source or "Unknown",
             Duration = duration,
+        },
+    })
+end
+
+-- A victim shares one deadline across all overlapping combo pressure.
+local function FinishComboLock(self, character, record, lock)
+    if Records[character] ~= record or record.ComboLock ~= lock then
+        return
+    end
+
+    local hitStunned = record.State == State.Stunned and record.Stun
+        and record.Stun.Source == "Hit" and record.Stun.ComboLock == lock
+    local controlled = hitStunned or lock.Exhausted
+    for attacker, restriction in pairs(record.AttackRestrictions) do
+        if restriction.ComboLock == lock then
+            controlled = IsRestrictionCurrent(attacker, restriction) or controlled
+            record.AttackRestrictions[attacker] = nil
+        end
+    end
+    record.ComboLock = nil
+
+    if hitStunned then
+        self:Transition(character, State.Idle)
+    end
+    if controlled then
+        record.ComboLockImmuneUntil = os.clock() + CombatStateConfig.Stun.PostStunImmunity
+        record.StunImmuneUntil = math.max(record.StunImmuneUntil, record.ComboLockImmuneUntil)
+        record.StunImmuneSource = "ComboLock"
+        record.StunImmuneSeriesId = nil
+    end
+end
+
+local function GetComboLock(self, character, record)
+    local now = os.clock()
+    local lock = record.ComboLock
+    if lock and now >= lock.EndsAt then
+        FinishComboLock(self, character, record, lock)
+        lock = nil
+    end
+    if now < record.ComboLockImmuneUntil then
+        return nil
+    end
+
+    -- A fresh budget requires a real gap in control and expired stun immunity.
+    if lock and record.State ~= State.Stunned
+        and not IsComboAttackRestricted(record) and now >= record.StunImmuneUntil
+    then
+        record.ComboLock = nil
+        lock = nil
+    end
+    if not lock then
+        local duration = WeaponComboConfig.Settings.MaxComboLockDuration
+        if not IsFiniteNumber(duration) or duration <= 0 then
+            return nil
+        end
+        lock = { StartedAt = now, EndsAt = now + duration }
+        record.ComboLock = lock
+        task.delay(duration, function()
+            FinishComboLock(self, character, record, lock)
+        end)
+    end
+    return lock
+end
+
+-- Only a server-confirmed hit from the current Active attack may refresh combo HitStun.
+function CombatStateService:ApplyComboHitStun(character, duration, attacker, attackId)
+    if not IsFiniteNumber(duration) or duration < 0 then
+        return false, "InvalidDuration"
+    end
+    if not self:IsAttackActive(attacker, attackId) then
+        return false, "StaleAttack"
+    end
+
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    local attackerHumanoid = attacker:FindFirstChildOfClass("Humanoid")
+    if not character or not character.Parent or not humanoid or humanoid.Health <= 0
+        or not attacker.Parent or not attackerHumanoid or attackerHumanoid.Health <= 0
+    then
+        return false, "CharacterUnavailable"
+    end
+
+    local record = GetRecord(character)
+    if record.State == State.Dead then
+        return false, "Dead"
+    end
+    local lock = GetComboLock(self, character, record)
+    if not lock then
+        return false, "ComboLockImmune"
+    end
+
+    local now = os.clock()
+    local seriesId = Records[attacker].Attack.SeriesId
+    local stun = record.Stun
+    if record.State == State.Stunned then
+        if not stun or stun.Source ~= "Hit" or stun.ComboLock ~= lock
+            or stun.SeriesId ~= seriesId
+        then
+            return false, "OtherStun"
+        end
+    elseif now < record.StunImmuneUntil
+        and not (record.StunImmuneSource == "Hit" and record.StunImmuneSeriesId == seriesId)
+    then
+        return false, "StunImmune"
+    end
+
+    local endsAt = math.min(now + math.min(duration, CombatStateConfig.Stun.MaxDuration), lock.EndsAt)
+    if endsAt <= now then
+        return false, "NoHitStun"
+    end
+    if record.State == State.Stunned then
+        record.StateEndsAt = math.min(math.max(record.StateEndsAt or now, endsAt), lock.EndsAt)
+        stun.Duration = record.StateEndsAt - record.StateStartedAt
+        ScheduleStateEnd(self, character, record, record.StateEndsAt - now)
+        return true, "Refreshed"
+    end
+
+    if duration == 0 then
+        return false, "NoHitStun"
+    end
+    if record.State == State.Stunned then
+        endsAt = math.min(math.max(record.StateEndsAt or now, endsAt), lock.EndsAt)
+        record.StateEndsAt = endsAt
+        stun.Duration = endsAt - record.StateStartedAt
+        ScheduleStateEnd(self, character, record, endsAt - now)
+        return true, "Refreshed"
+    end
+
+    return self:Transition(character, State.Stunned, {
+        Duration = endsAt - now,
+        Data = {
+            Source = "Hit",
+            Duration = endsAt - now,
+            SeriesId = seriesId,
+            ComboLock = lock,
         },
     })
 end
@@ -668,6 +829,11 @@ function CombatStateService:RestrictComboCounterattack(character, attackId, targ
         return true
     end
 
+    local lock = GetComboLock(self, target, targetRecord)
+    if not lock then
+        return false, "ComboLockImmune"
+    end
+
     attack.ComboRestrictedTargets = attack.ComboRestrictedTargets
         or setmetatable({}, { __mode = "k" })
     attack.ComboRestrictedTargets[target] = true
@@ -675,6 +841,8 @@ function CombatStateService:RestrictComboCounterattack(character, attackId, targ
         Attack = attack,
         HitAttackId = attackId,
         UntilRecovery = false,
+        ExpiresAt = lock.EndsAt,
+        ComboLock = lock,
     }
 
     -- A prior hit-stun immunity must not leave a counterattack running.

@@ -179,6 +179,11 @@ function WeaponComboConfig.GetStartMove(weaponId)
 end
 
 function WeaponComboConfig.Validate()
+    assert(
+        IsFiniteNumber(WeaponComboConfig.Settings.MaxComboLockDuration)
+            and WeaponComboConfig.Settings.MaxComboLockDuration > 0,
+        "[WeaponComboConfig] Settings.MaxComboLockDuration must be > 0"
+    )
     for weaponId, weapon in pairs(WeaponComboConfig.Weapons) do
         assert(
             type(weapon.StartMove) == "string",
