@@ -1,0 +1,665 @@
+diff --git a/src/ServerScriptService/Services/CombatService.lua b/src/ServerScriptService/Services/CombatService.lua
+index 041aed3..6f724fa 100644
+--- a/src/ServerScriptService/Services/CombatService.lua
++++ b/src/ServerScriptService/Services/CombatService.lua
+@@ -24,6 +24,8 @@ local WeaponRegistry = require(
+ local DataService = require(script.Parent.DataService)
+ local RemoteService = require(script.Parent.RemoteService)
+ local CombatStateService = require(script.Parent.CombatStateService)
++local ComboService = require(script.Parent.ComboService)
++local WeaponComboConfig = require(ReplicatedStorage.Shared.Config.WeaponComboConfig)
+ local NPCCombatAnimationService = require(script.Parent.NPCCombatAnimationService)
+ 
+ local CombatService = {}
+@@ -33,8 +35,16 @@ local CombatService = {}
+ local NextAttackAt = setmetatable({}, { __mode = "k" })
+ 
+ -- [character] = данные текущего удара, пока он не завершился:
+--- { AttackId, Player (nil у NPC), Character, WeaponId, Weapon, Strength (только NPC) }
++-- { AttackId, Player (nil у NPC), Character, WeaponId, Weapon, Strength (только NPC), TracksCombo }
+ local Attacks = setmetatable({}, { __mode = "k" })
++local function CanTrackCombo(attack)
++    if attack.TracksCombo and not ComboService:ValidateWeapon(attack.Character) then
++        attack.TracksCombo = false
++    end
++
++    return attack.TracksCombo
++end
++
+ local function Log(...)
+     if CombatConfig.DebugLogging then
+         print("[CombatService]", ...)
+@@ -316,7 +326,11 @@ function CombatService:RunActiveWindow(attack)
+ 
+     -- Базовый урон считается один раз на удар, в момент начала Active.
+     -- Итог для каждой цели (блок, парирование) определяет ApplyDamage.
++    local move = attack.Move
+     local damage = self:CalculateDamage(weapon, strength)
++    if move then
++        damage *= move.DamageMultiplier
++    end
+     local feedback = RemoteService:GetEvent("CombatFeedback")
+ 
+     local hits = 0
+@@ -366,9 +380,14 @@ function CombatService:RunActiveWindow(attack)
+                 if outcome.Result == CombatStates.DamageResults.Hit
+                     and outcome.Damage > 0
+                 then
++                    CombatStateService:UseHitRecovery(character, attackId)
++                    if CanTrackCombo(attack) then
++                        ComboService:ConfirmHit(character, attackId)
++                    end
++
+                     CombatStateService:ApplyStun(
+                         target.Model,
+-                        weapon.HitStun,
++                        move and move.HitStun or weapon.HitStun,
+                         "Hit"
+                     )
+                 end
+@@ -377,6 +396,11 @@ function CombatService:RunActiveWindow(attack)
+                 -- Визуальная реакция Parried отправляется отдельно и не зависит
+                 -- от того, является атакующий игроком или NPC.
+                 if outcome.Result == CombatStates.DamageResults.Parried then
++                    if attack.TracksCombo then
++                        ComboService:Reset(character, "Parried")
++                        attack.TracksCombo = false
++                    end
++
+                     CombatStateService:ApplyStun(
+                         character,
+                         CombatStateConfig.Stun.ParryDuration,
+@@ -446,6 +470,21 @@ end
+ -- owner    - Player либо nil (NPC);
+ -- strength - сила атакующего, нужна только NPC (у игрока берётся из профиля).
+ -- Возвращает true, <AttackId> либо false, <причина>.
++local function GetMoveTiming(weapon, move)
++    if not move then
++        return weapon.AttackTiming
++    end
++
++    return {
++        Startup = move.Startup,
++        Active = move.Active,
++        Recovery = move.RecoveryOnMiss,
++        RecoveryOnHit = move.RecoveryOnHit,
++        CanBlockDuringRecovery = weapon.AttackTiming.CanBlockDuringRecovery,
++        CanDodgeDuringRecovery = weapon.AttackTiming.CanDodgeDuringRecovery,
++    }
++end
++
+ local function BeginAttack(self, character, owner, strength)
+     local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+     local root = character and character:FindFirstChild("HumanoidRootPart")
+@@ -469,7 +508,15 @@ local function BeginAttack(self, character, owner, strength)
+         return false, "Cooldown"
+     end
+ 
+-    local started, attackId = CombatStateService:StartAttack(character, weapon.AttackTiming)
++    local moveId, move
++    if owner then
++        moveId, move = WeaponComboConfig.GetStartMove(weaponId)
++    end
++
++    local started, attackId = CombatStateService:StartAttack(character, GetMoveTiming(weapon, move), {
++        MoveId = moveId,
++        ComboIndex = move and move.Index,
++    })
+ 
+     if not started then
+         warn("[CombatService] Could not start attack:", weaponId, attackId)
+@@ -484,6 +531,8 @@ local function BeginAttack(self, character, owner, strength)
+         WeaponId = weaponId,
+         Weapon = weapon,
+         Strength = strength,
++        Move = move,
++        TracksCombo = move ~= nil and ComboService:BeginSeries(character, weaponId, attackId),
+     }
+ 
+     Log(owner and owner.Name or character.Name, "attack", attackId, weaponId, "started")
+@@ -492,14 +541,36 @@ local function BeginAttack(self, character, owner, strength)
+ end
+ 
+ -- Атака игрока по запросу клиента.
+-function CombatService:PerformAttack(player)
++function CombatService:PerformAttack(player, repeatHeld)
+     local profile = DataService:GetProfile(player)
+ 
+     if not profile then
+         return false, "NoProfile"
+     end
+ 
+-    return BeginAttack(self, player.Character, player, nil)
++    local character = player.Character
++    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
++
++    if character and character.Parent and humanoid and humanoid.Health > 0
++        and CombatStateService:GetState(character) == CombatStates.Attacking
++    then
++        if repeatHeld then
++            return false, "AlreadyAttacking"
++        end
++
++        local attack = Attacks[character]
++
++        if not attack or attack.Player ~= player
++            or attack.AttackId ~= CombatStateService:GetAttackId(character)
++            or not CanTrackCombo(attack)
++        then
++            return false, "NoCombo"
++        end
++
++        return ComboService:BufferAttack(character)
++    end
++
++    return BeginAttack(self, character, player, nil)
+ end
+ 
+ -- Атака NPC (вызывается только сервером, например поведением манекена).
+@@ -518,6 +589,39 @@ function CombatService:PerformNPCAttack(character, options)
+     return BeginAttack(self, character, nil, options and options.Strength)
+ end
+ 
++local function ContinueCombo(character, attackId)
++    local attack = Attacks[character]
++    local humanoid = character:FindFirstChildOfClass("Humanoid")
++    if not attack or attack.AttackId ~= attackId or not character.Parent
++        or not humanoid or humanoid.Health <= 0
++        or not attack.Player or attack.Player.Character ~= character or not CanTrackCombo(attack)
++    then
++        return
++    end
++
++    local now = os.clock()
++    local moveId, move = ComboService:GetContinuation(character, attackId, now)
++    if not move then
++        return
++    end
++
++    local started, nextAttackId = CombatStateService:StartComboAttack(
++        character,
++        GetMoveTiming(attack.Weapon, move),
++        { MoveId = moveId, ComboIndex = move.Index },
++        attackId
++    )
++    if not started then
++        return
++    end
++
++    ComboService:Advance(character, nextAttackId, attackId, now)
++    local nextAttack = table.clone(attack)
++    nextAttack.AttackId = nextAttackId
++    nextAttack.Move = move
++    Attacks[character] = nextAttack
++end
++
+ -- СОСТОЯНИЕ И БЛОК (СЕТЬ) -----------------------------------------------
+ 
+ local STATE_REQUEST_ACTIONS = {
+@@ -528,6 +632,8 @@ local STATE_REQUEST_ACTIONS = {
+ 
+ -- Отправляет игроку его текущее боевое состояние.
+ local function SendState(player, payload)
++    payload.AttackId, payload.MoveId, payload.ComboIndex =
++        CombatStateService:GetAttackIdentity(player.Character)
+     RemoteService:GetEvent("CombatStateChanged"):FireClient(player, payload)
+ end
+ 
+@@ -551,6 +657,7 @@ function CombatService:HandleStateRequest(player, action)
+     -- Sync: клиент запрашивает актуальное состояние (после появления персонажа и т.п.)
+     SendState(player, {
+         State = CombatStateService:GetState(character),
++        Sync = true,
+         Phase = CombatStateService:GetAttackPhase(character),
+     })
+ 
+@@ -582,9 +689,17 @@ function CombatService:Init()
+         end
+     end)
+ 
++    CombatStateService:OnRecoveryFinished(ContinueCombo)
++
+     -- Удар закончился (в том числе прерван): данные удара больше не нужны
+-    CombatStateService:OnStateChanged(function(character, _newState, oldState)
+-        if oldState == CombatStates.Attacking then
++    CombatStateService:OnStateChanged(function(character, newState, oldState)
++        if oldState == CombatStates.Attacking and newState ~= CombatStates.Attacking then
++            local attack = Attacks[character]
++
++            if attack and attack.TracksCombo then
++                ComboService:Reset(character, "AttackEnded")
++            end
++
+             Attacks[character] = nil
+         end
+     end)
+@@ -604,7 +719,11 @@ function CombatService:Init()
+         end
+     end)
+ 
+-    CombatStateService:OnAttackPhaseChanged(function(character, phase)
++    CombatStateService:OnAttackPhaseChanged(function(character, phase, attackId)
++        if CombatStateService:GetAttackId(character) ~= attackId then
++            return
++        end
++
+         local owner = Players:GetPlayerFromCharacter(character)
+ 
+         if owner then
+@@ -629,12 +748,12 @@ function CombatService:Init()
+     -- Клиент присылает только команду "Attack": без урона, целей и координат.
+     -- RemoteService добавляет лимит частоты и проверку аргументов.
+     RemoteService:OnEvent("CombatRequest", {
+-        RateLimit = 10,
+-        Validate = function(action)
+-            return action == "Attack"
++        RateLimit = 15,
++        Validate = function(action, repeatHeld)
++            return action == "Attack" and (repeatHeld == nil or repeatHeld == true)
+         end,
+-    }, function(player)
+-        self:PerformAttack(player)
++    }, function(player, _action, repeatHeld)
++        self:PerformAttack(player, repeatHeld)
+     end)
+ 
+     print("[CombatService] Initialized")
+diff --git a/src/ServerScriptService/Services/CombatStateService.lua b/src/ServerScriptService/Services/CombatStateService.lua
+index 8081357..8ca17ed 100644
+--- a/src/ServerScriptService/Services/CombatStateService.lua
++++ b/src/ServerScriptService/Services/CombatStateService.lua
+@@ -166,6 +166,7 @@ local function CreateSignal()
+     return signal
+ end
+ 
++local RecoveryFinished = CreateSignal()
+ local StateChanged = CreateSignal()
+ local AttackPhaseChanged = CreateSignal()
+ local DamageApplied = CreateSignal()
+@@ -184,6 +185,10 @@ function CombatStateService:OnStateChanged(callback)
+ end
+ 
+ -- callback(character, phase, attackId). Возвращает функцию отписки.
++function CombatStateService:OnRecoveryFinished(callback)
++    return RecoveryFinished.Connect(callback)
++end
++
+ function CombatStateService:OnAttackPhaseChanged(callback)
+     return AttackPhaseChanged.Connect(callback)
+ end
+@@ -280,7 +285,7 @@ end
+ --   Data     - данные подзаписи (для Attacking: Phase, CanBlockDuringRecovery,
+ --              CanDodgeDuringRecovery, ...).
+ -- Возвращает true, <TransitionId> либо false, <причина>.
+-function CombatStateService:Transition(character, newState, options)
++local function Transition(self, character, newState, options, previousAttackId)
+     if not ValidStates[newState] then
+         return false, "UnknownState"
+     end
+@@ -288,7 +293,15 @@ function CombatStateService:Transition(character, newState, options)
+     local record = GetRecord(character)
+     local now = os.clock()
+ 
+-    local allowed, reason = CanEnter(record, newState, now)
++    local allowed, reason
++    if previousAttackId then
++        local attack = record.Attack
++        allowed = newState == State.Attacking and record.State == State.Attacking
++            and attack and attack.AttackId == previousAttackId and attack.Phase == Phase.Recovery
++        reason = "InvalidComboTransition"
++    else
++        allowed, reason = CanEnter(record, newState, now)
++    end
+ 
+     if not allowed then
+         return false, reason
+@@ -349,9 +362,23 @@ function CombatStateService:Transition(character, newState, options)
+ 
+     Log(character.Name, oldState, "->", newState, "#" .. record.TransitionId)
+ 
+-    StateChanged.Fire(character, newState, oldState, record.TransitionId)
++    local transitionId = record.TransitionId
++    StateChanged.Fire(character, newState, oldState, transitionId)
++
++    return true, transitionId
++end
+ 
+-    return true, record.TransitionId
++function CombatStateService:Transition(character, newState, options)
++    return Transition(self, character, newState, options)
++end
++
++function CombatStateService:GetAttackIdentity(character)
++    local record = Records[character]
++    local attack = record and record.Attack
++    if attack then
++        return attack.AttackId, attack.MoveId, attack.ComboIndex
++    end
++    return nil, nil, nil
+ end
+ 
+ -- Меняет фазу текущей атаки. attackId защищает от устаревших вызовов: если атака уже
+@@ -442,6 +469,8 @@ local function IsValidTiming(timing)
+         and IsFiniteNumber(timing.Startup) and timing.Startup >= 0
+         and IsFiniteNumber(timing.Active) and timing.Active > 0
+         and IsFiniteNumber(timing.Recovery) and timing.Recovery >= 0
++        and (timing.RecoveryOnHit == nil
++            or (IsFiniteNumber(timing.RecoveryOnHit) and timing.RecoveryOnHit >= 0))
+ end
+ 
+ -- Запускает атаку: Attacking (Startup) -> Active -> Recovery -> Idle.
+@@ -449,26 +478,35 @@ end
+ -- поэтому любое прерывание (оглушение, смерть, уклонение из Recovery) обрывает цепочку,
+ -- а устаревшие шаги ничего не меняют и не наносят урона.
+ -- Возвращает true, <AttackId> либо false, <причина>.
+-function CombatStateService:StartAttack(character, timing)
++local function StartAttack(self, character, timing, data, previousAttackId)
+     if not IsValidTiming(timing) then
+         return false, "InvalidTiming"
+     end
+ 
+-    local ok, reason = self:Transition(character, State.Attacking, {
++    local ok, transitionId = Transition(self, character, State.Attacking, {
+         Data = {
+             Phase = Phase.Startup,
++            MoveId = data and data.MoveId,
++            ComboIndex = data and data.ComboIndex,
+             CanBlockDuringRecovery = timing.CanBlockDuringRecovery == true,
+             CanDodgeDuringRecovery = timing.CanDodgeDuringRecovery == true,
+         },
+-    })
++    }, previousAttackId)
+ 
+     if not ok then
+-        return false, reason
++        return false, transitionId
++    end
++
++    local record = Records[character]
++    if not record or record.TransitionId ~= transitionId then
++        return false, "AttackInterrupted"
+     end
+ 
+-    local attack = Records[character].Attack
++    local attack = record.Attack
+     local attackId = attack.AttackId
+ 
++    attack.Recovery = timing.Recovery
++    attack.RecoveryOnHit = timing.RecoveryOnHit
+     attack.PhaseEndsAt = os.clock() + timing.Startup
+ 
+     self:Delay(character, timing.Startup, function()
+@@ -476,13 +514,27 @@ function CombatStateService:StartAttack(character, timing)
+             return
+         end
+ 
++        if not self:IsAttackActive(character, attackId) then
++            return
++        end
++
+         self:Delay(character, timing.Active, function()
+-            if not self:SetAttackPhase(character, attackId, Phase.Recovery, timing.Recovery) then
++            if not self:SetAttackPhase(character, attackId, Phase.Recovery, attack.Recovery) then
+                 return
+             end
+ 
+-            self:Delay(character, timing.Recovery, function()
+-                self:Transition(character, State.Idle)
++            if self:GetAttackId(character) ~= attackId then
++                return
++            end
++
++            self:Delay(character, attack.Recovery, function()
++                -- Notify combat before falling back to Idle. A continuation
++                -- replaces the attack and invalidates this recovery callback.
++                RecoveryFinished.Fire(character, attackId)
++
++                if self:GetAttackId(character) == attackId then
++                    self:Transition(character, State.Idle)
++                end
+             end)
+         end)
+     end)
+@@ -491,6 +543,24 @@ function CombatStateService:StartAttack(character, timing)
+ end
+ 
+ -- true, пока атака attackId идёт и находится в фазе Active (окно регистрации попаданий).
++function CombatStateService:StartAttack(character, timing, data)
++    return StartAttack(self, character, timing, data)
++end
++
++function CombatStateService:StartComboAttack(character, timing, data, previousAttackId)
++    if type(previousAttackId) ~= "number" then
++        return false, "MissingAttackId"
++    end
++    return StartAttack(self, character, timing, data, previousAttackId)
++end
++
++function CombatStateService:UseHitRecovery(character, attackId)
++    if self:IsAttackActive(character, attackId) then
++        local attack = Records[character].Attack
++        attack.Recovery = attack.RecoveryOnHit or attack.Recovery
++    end
++end
++
+ function CombatStateService:IsAttackActive(character, attackId)
+     local record = Records[character]
+     local attack = record and record.Attack
+diff --git a/src/ServerScriptService/Services/ComboService.lua b/src/ServerScriptService/Services/ComboService.lua
+index 758c17e..749b154 100644
+--- a/src/ServerScriptService/Services/ComboService.lua
++++ b/src/ServerScriptService/Services/ComboService.lua
+@@ -267,67 +267,33 @@ function ComboService:ConsumeBufferedAttack(character)
+     return true
+ end
+ 
+--- Переводит логическую серию на следующее звено.
+---
+--- ВАЖНО:
+--- этот метод НЕ переводит CombatState и НЕ запускает атаку.
+--- На ЭТАПЕ 3 вызов будет происходить только после успешного
+--- StartComboAttack() в CombatStateService.
+-function ComboService:Advance(character, nextAttackId)
++function ComboService:GetContinuation(character, attackId, now)
+     local record = GetRecord(character)
+-
+-    if record.ComboIndex == 0 then
+-        return false, "NoCombo"
+-    end
+-
+-    if self:IsExpired(character) then
+-        self:Reset(character, "Expired")
+-
+-        return false, "Expired"
+-    end
+-
+-    if not record.HitConfirmed then
+-        return false, "NotConfirmed"
+-    end
+-
+-    local weaponCombo =
+-        WeaponComboConfig.GetWeapon(record.WeaponId)
+-
+-    local currentMove =
+-        WeaponComboConfig.GetMove(
+-            record.WeaponId,
+-            record.MoveId
+-        )
+-
+-    if not weaponCombo or not currentMove then
+-        self:Reset(character, "InvalidConfig")
+-
+-        return false, "InvalidConfig"
++    if record.ComboIndex == 0 or record.AttackId ~= attackId
++        or not record.HitConfirmed or not record.BufferedAttack
++        or self:IsExpired(character, now)
++    then
++        return nil
+     end
+ 
+-    if not currentMove.Next then
+-        return false, "ComboComplete"
++    local weaponCombo = WeaponComboConfig.GetWeapon(record.WeaponId)
++    local nextMoveId, nextMove = self:GetNextMove(character)
++    if not weaponCombo or not nextMove or nextMove.Index > weaponCombo.MaxChain then
++        return nil
+     end
+ 
+-    local nextMove =
+-        WeaponComboConfig.GetMove(
+-            record.WeaponId,
+-            currentMove.Next
+-        )
++    return nextMoveId, nextMove, weaponCombo
++end
+ 
++-- Вызывается после успешного запуска нового удара.
++function ComboService:Advance(character, nextAttackId, previousAttackId, now)
++    local moveId, nextMove, weaponCombo = self:GetContinuation(character, previousAttackId, now)
+     if not nextMove then
+-        self:Reset(character, "InvalidNextMove")
+-
+-        return false, "InvalidNextMove"
++        return false, "NoContinuation"
+     end
+ 
+-    if nextMove.Index > weaponCombo.MaxChain then
+-        self:Reset(character, "MaxChain")
+-
+-        return false, "MaxChain"
+-    end
+-
+-    record.MoveId = currentMove.Next
++    local record = GetRecord(character)
++    record.MoveId = moveId
+     record.ComboIndex = nextMove.Index
+ 
+     record.HitConfirmed = false
+diff --git a/src/StarterPlayer/StarterPlayerScripts/CombatAnimationController.client.lua b/src/StarterPlayer/StarterPlayerScripts/CombatAnimationController.client.lua
+index 7e86175..765754a 100644
+--- a/src/StarterPlayer/StarterPlayerScripts/CombatAnimationController.client.lua
++++ b/src/StarterPlayer/StarterPlayerScripts/CombatAnimationController.client.lua
+@@ -95,6 +95,7 @@ local characterConnections = {}
+ 
+ -- Состояние от сервера, пришедшее раньше, чем загрузился Animator
+ local pendingPayload = nil
++local animatedAttackId = nil
+ 
+ local function debugLog(...)
+     if Settings.DebugLogging then
+@@ -524,23 +525,11 @@ local function applyState(payload, restoring)
+     local weaponId = getWeaponId()
+ 
+     if state == CombatStates.Attacking then
+-        -- Событие со сменой фазы (без OldState) анимацию не запускает:
+-        -- запуск только на подтверждённом переходе в Attacking или при восстановлении.
+-        local isNewAttack = payload.OldState ~= nil and payload.OldState ~= CombatStates.Attacking
+-
+-        if isNewAttack then
++        if payload.AttackId ~= nil and payload.AttackId ~= animatedAttackId then
++            animatedAttackId = payload.AttackId
+             unarmedIdleToken += 1
+             unarmedIdleExpiresAt = 0
+-
+-            if activeSlot == "UnarmedIdle" then
+-                stopActive()
+-            end
+-            playSlot(SLOT_ATTACK, weaponId)
+-        elseif restoring then
+-            -- Sync посреди удара: показываем атаку с текущего момента, если она ещё не идёт
+-            if not (activeSlot == SLOT_ATTACK and activeTrack and activeTrack.IsPlaying) then
+-                playSlot(SLOT_ATTACK, weaponId, elapsed)
+-            end
++            playSlot(SLOT_ATTACK, weaponId, restoring and elapsed or nil)
+         end
+     elseif state == CombatStates.Blocking then
+         enterBlock(weaponId, restoring and elapsed or 0)
+diff --git a/src/StarterPlayer/StarterPlayerScripts/CombatController.client.lua b/src/StarterPlayer/StarterPlayerScripts/CombatController.client.lua
+index 94f46a6..e0a8f20 100644
+--- a/src/StarterPlayer/StarterPlayerScripts/CombatController.client.lua
++++ b/src/StarterPlayer/StarterPlayerScripts/CombatController.client.lua
+@@ -3,7 +3,8 @@
+ -- Урон, цели, кулдаун и блок решает сервер. Клиент шлёт только намерения:
+ --   CombatRequest("Attack"), CombatStateRequest("BlockStart" | "BlockEnd" | "Sync").
+ --
+--- ЛКМ: атака. Зажатие ЛКМ: повторные атаки с учётом кулдауна оружия.
++-- ЛКМ: атака или одно нажатие в буфер во время текущего удара.
++-- Зажатие ЛКМ: повторные запросы в Idle.
+ -- ПКМ или F (удерживать): блок. Пока блок удерживается, атаки не отправляются.
+ -- Работает и без оружия, и с экипированным Tool, у которого есть атрибут CombatWeaponId.
+ --
+@@ -19,10 +20,6 @@ local UserInputService = game:GetService("UserInputService")
+ 
+ local player = Players.LocalPlayer
+ 
+-local WeaponRegistry = require(
+-    ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Weapons"):WaitForChild("WeaponRegistry")
+-)
+-
+ local CombatStates = require(
+     ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Constants"):WaitForChild("CombatStates")
+ )
+@@ -33,7 +30,7 @@ local CombatFeedback = Events:WaitForChild("CombatFeedback")
+ local CombatStateRequest = Events:WaitForChild("CombatStateRequest")
+ local CombatStateChanged = Events:WaitForChild("CombatStateChanged")
+ 
+--- Небольшой запас сверх кулдауна, чтобы запрос не приходил на сервер чуть раньше времени
++-- Минимальный интервал между запросами атаки.
+ local ATTACK_REQUEST_INTERVAL = 0.08
+ local nextAttackRequestAt = 0
+ 
+@@ -64,19 +61,12 @@ local function getHumanoid()
+     return character and character:FindFirstChildOfClass("Humanoid")
+ end
+ 
+--- Клиент использует конфиг только для темпа атак. Сервер определяет оружие сам.
+-local function getWeaponConfig()
+-    local _, weapon = WeaponRegistry.ResolveFromCharacter(player.Character)
+-
+-    return weapon
+-end
+-
+ -- Анимации здесь не проигрываются: их показывает CombatAnimationController
+ -- после того, как сервер подтвердил атаку (иначе отклонённая атака выглядела бы успешной).
+ 
+ -- АТАКА -----------------------------------------------------------------
+ 
+-local function tryAttack()
++local function tryAttack(repeatHeld)
+     local humanoid = getHumanoid()
+ 
+     if not humanoid or humanoid.Health <= 0 then
+@@ -95,7 +85,7 @@ local function tryAttack()
+ 
+     nextAttackRequestAt = now + ATTACK_REQUEST_INTERVAL
+ 
+-    CombatRequest:FireServer("Attack")
++    CombatRequest:FireServer("Attack", repeatHeld)
+ end
+ 
+ -- БЛОК ------------------------------------------------------------------
+@@ -170,13 +160,13 @@ UserInputService.WindowFocusReleased:Connect(function()
+     releaseBlock()
+ end)
+ 
+--- Зажатие ЛКМ: повторяем атаки, как только проходит кулдаун.
++-- Зажатие ЛКМ повторяет запросы в Idle, а в буфер идёт отдельное нажатие.
+ -- Зажатие блока: повторяем запрос, пока сервер его не примет.
+ RunService.Heartbeat:Connect(function()
+     if blockHeld then
+         requestBlock()
+-    elseif attackHeld then
+-        tryAttack()
++    elseif attackHeld and combatState == CombatStates.Idle then
++        tryAttack(true)
+     end
+ end)
+ 
+@@ -191,6 +181,7 @@ end)
+ -- Новый персонаж всегда начинает в Idle; уточняем у сервера на случай расхождения
+ player.CharacterAdded:Connect(function()
+     combatState = CombatStates.Idle
++    nextAttackRequestAt = 0
+     nextBlockRequestAt = 0
+ 
+     CombatStateRequest:FireServer("Sync")

@@ -267,67 +267,33 @@ function ComboService:ConsumeBufferedAttack(character)
     return true
 end
 
--- Переводит логическую серию на следующее звено.
---
--- ВАЖНО:
--- этот метод НЕ переводит CombatState и НЕ запускает атаку.
--- На ЭТАПЕ 3 вызов будет происходить только после успешного
--- StartComboAttack() в CombatStateService.
-function ComboService:Advance(character, nextAttackId)
+function ComboService:GetContinuation(character, attackId, now)
     local record = GetRecord(character)
-
-    if record.ComboIndex == 0 then
-        return false, "NoCombo"
+    if record.ComboIndex == 0 or record.AttackId ~= attackId
+        or not record.HitConfirmed or not record.BufferedAttack
+        or self:IsExpired(character, now)
+    then
+        return nil
     end
 
-    if self:IsExpired(character) then
-        self:Reset(character, "Expired")
-
-        return false, "Expired"
+    local weaponCombo = WeaponComboConfig.GetWeapon(record.WeaponId)
+    local nextMoveId, nextMove = self:GetNextMove(character)
+    if not weaponCombo or not nextMove or nextMove.Index > weaponCombo.MaxChain then
+        return nil
     end
 
-    if not record.HitConfirmed then
-        return false, "NotConfirmed"
-    end
+    return nextMoveId, nextMove, weaponCombo
+end
 
-    local weaponCombo =
-        WeaponComboConfig.GetWeapon(record.WeaponId)
-
-    local currentMove =
-        WeaponComboConfig.GetMove(
-            record.WeaponId,
-            record.MoveId
-        )
-
-    if not weaponCombo or not currentMove then
-        self:Reset(character, "InvalidConfig")
-
-        return false, "InvalidConfig"
-    end
-
-    if not currentMove.Next then
-        return false, "ComboComplete"
-    end
-
-    local nextMove =
-        WeaponComboConfig.GetMove(
-            record.WeaponId,
-            currentMove.Next
-        )
-
+-- Вызывается после успешного запуска нового удара.
+function ComboService:Advance(character, nextAttackId, previousAttackId, now)
+    local moveId, nextMove, weaponCombo = self:GetContinuation(character, previousAttackId, now)
     if not nextMove then
-        self:Reset(character, "InvalidNextMove")
-
-        return false, "InvalidNextMove"
+        return false, "NoContinuation"
     end
 
-    if nextMove.Index > weaponCombo.MaxChain then
-        self:Reset(character, "MaxChain")
-
-        return false, "MaxChain"
-    end
-
-    record.MoveId = currentMove.Next
+    local record = GetRecord(character)
+    record.MoveId = moveId
     record.ComboIndex = nextMove.Index
 
     record.HitConfirmed = false

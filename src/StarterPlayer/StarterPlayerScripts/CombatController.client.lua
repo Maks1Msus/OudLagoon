@@ -3,7 +3,8 @@
 -- Урон, цели, кулдаун и блок решает сервер. Клиент шлёт только намерения:
 --   CombatRequest("Attack"), CombatStateRequest("BlockStart" | "BlockEnd" | "Sync").
 --
--- ЛКМ: атака. Зажатие ЛКМ: повторные атаки с учётом кулдауна оружия.
+-- ЛКМ: атака или одно нажатие в буфер во время текущего удара.
+-- Each attack request requires a separate LMB press.
 -- ПКМ или F (удерживать): блок. Пока блок удерживается, атаки не отправляются.
 -- Работает и без оружия, и с экипированным Tool, у которого есть атрибут CombatWeaponId.
 --
@@ -19,10 +20,6 @@ local UserInputService = game:GetService("UserInputService")
 
 local player = Players.LocalPlayer
 
-local WeaponRegistry = require(
-    ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Weapons"):WaitForChild("WeaponRegistry")
-)
-
 local CombatStates = require(
     ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Constants"):WaitForChild("CombatStates")
 )
@@ -33,7 +30,7 @@ local CombatFeedback = Events:WaitForChild("CombatFeedback")
 local CombatStateRequest = Events:WaitForChild("CombatStateRequest")
 local CombatStateChanged = Events:WaitForChild("CombatStateChanged")
 
--- Небольшой запас сверх кулдауна, чтобы запрос не приходил на сервер чуть раньше времени
+-- Минимальный интервал между запросами атаки.
 local ATTACK_REQUEST_INTERVAL = 0.08
 local nextAttackRequestAt = 0
 
@@ -49,7 +46,6 @@ local CANNOT_ATTACK_STATES = {
     [CombatStates.Dead] = true,
 }
 
-local attackHeld = false
 local blockHeld = false
 local nextBlockRequestAt = 0
 
@@ -62,13 +58,6 @@ local function getHumanoid()
     local character = player.Character
 
     return character and character:FindFirstChildOfClass("Humanoid")
-end
-
--- Клиент использует конфиг только для темпа атак. Сервер определяет оружие сам.
-local function getWeaponConfig()
-    local _, weapon = WeaponRegistry.ResolveFromCharacter(player.Character)
-
-    return weapon
 end
 
 -- Анимации здесь не проигрываются: их показывает CombatAnimationController
@@ -146,37 +135,32 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
     end
 
     if input.UserInputType == Enum.UserInputType.MouseButton1 then
-        attackHeld = true
         tryAttack()
     elseif isBlockInput(input) then
         blockHeld = true
         nextBlockRequestAt = 0
+        -- Fresh presses may use a server-granted combo-parry window during hitstun.
+        CombatStateRequest:FireServer("ComboParry")
         requestBlock()
     end
 end)
 
 -- Отпускание обрабатывается без проверки gameProcessed: блок не должен "залипнуть"
 UserInputService.InputEnded:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 then
-        attackHeld = false
-    elseif isBlockInput(input) then
+    if isBlockInput(input) then
         releaseBlock()
     end
 end)
 
 -- Окно потеряло фокус: отпускание кнопки мы не увидим, поэтому сбрасываем всё сами
 UserInputService.WindowFocusReleased:Connect(function()
-    attackHeld = false
     releaseBlock()
 end)
 
--- Зажатие ЛКМ: повторяем атаки, как только проходит кулдаун.
 -- Зажатие блока: повторяем запрос, пока сервер его не примет.
 RunService.Heartbeat:Connect(function()
     if blockHeld then
         requestBlock()
-    elseif attackHeld then
-        tryAttack()
     end
 end)
 
@@ -191,6 +175,7 @@ end)
 -- Новый персонаж всегда начинает в Idle; уточняем у сервера на случай расхождения
 player.CharacterAdded:Connect(function()
     combatState = CombatStates.Idle
+    nextAttackRequestAt = 0
     nextBlockRequestAt = 0
 
     CombatStateRequest:FireServer("Sync")

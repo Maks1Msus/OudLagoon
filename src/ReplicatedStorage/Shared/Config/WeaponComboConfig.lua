@@ -120,8 +120,8 @@ WeaponComboConfig.Weapons = {
                 DamageMultiplier = 1.15,
                 HitStun = 0.50,
 
-                -- В будущем переход после этого звена даст защищающемуся
-                -- специальное окно для combo-parry.
+                -- Fresh F press during the first 0.16s of Light3 Startup grants
+                -- a source-specific parry, including while recovering from Hit stun.
                 ParryInterrupt = true,
                 InterruptWindow = 0.16,
             },
@@ -323,6 +323,13 @@ function WeaponComboConfig.Validate()
             )
 
             if move.ParryInterrupt then
+                assert(
+                    move.Next ~= nil and weapon.Moves[move.Next] ~= nil,
+                    string.format(
+                        "[WeaponComboConfig] %s.%s.ParryInterrupt needs a next move",
+                        weaponId, moveId
+                    )
+                )
                 assert(
                     IsFiniteNumber(move.InterruptWindow)
                         and move.InterruptWindow > 0,

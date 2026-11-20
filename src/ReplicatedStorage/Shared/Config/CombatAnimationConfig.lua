@@ -43,8 +43,13 @@ CombatAnimationConfig.HitSlots = { "Hit1", "Hit2", "Hit3" }
 -- Слоты: что именно можно проиграть и как.
 -- Priority - приоритет AnimationTrack (перекрывает приоритет, заданный в самом ассете).
 -- Looped   - зацикливать ли анимацию.
+local attackSettings = { Priority = Enum.AnimationPriority.Action2, Looped = false }
+
 CombatAnimationConfig.Slots = {
-    Attack = { Priority = Enum.AnimationPriority.Action2, Looped = false },
+    Attack = attackSettings,
+    Light1 = attackSettings,
+    Light2 = attackSettings,
+    Light3 = attackSettings,
 
     BlockStart = { Priority = Enum.AnimationPriority.Action, Looped = false },
     BlockLoop = { Priority = Enum.AnimationPriority.Action, Looped = true },
@@ -71,21 +76,25 @@ CombatAnimationConfig.Slots = {
 -- иначе берётся Common.
 CombatAnimationConfig.Weapons = {
     Unarmed = {
-        Attack = "rbxassetid://102078600906488",
-        UnarmedIdle = "rbxassetid://89432023654340",
+        Light1 = "rbxassetid://82567611460490",
+        Light2 = "rbxassetid://80589512439773",
+        Light3 = "rbxassetid://88850007621218",
+        UnarmedIdle = "rbxassetid://75878436802753",
     },
 
     Sword = {
-        Attack = "rbxassetid://91695651580130",
+        Light1 = "rbxassetid://135807577051754",
+        Light2 = "rbxassetid://108880380825509",
+        Light3 = "rbxassetid://102214543831853",
     },
 }
 
 -- Общие анимации, не зависящие от оружия.
 CombatAnimationConfig.Common = {
-    BlockStart = "rbxassetid://121365165289991",
-    BlockLoop = "rbxassetid://132713008662757",
+    BlockStart = "rbxassetid://131629216364126",
+    BlockLoop = "rbxassetid://101054029069813",
     BlockHit = "rbxassetid://0",
-    Parry = "rbxassetid://98950245815500",
+    Parry = "rbxassetid://111581143949849",
     Hit1 = "rbxassetid://96097949360272",
     Hit2 = "rbxassetid://129430604398091",
     Hit3 = "rbxassetid://111577929725231",
@@ -101,7 +110,7 @@ CombatAnimationConfig.Settings = {
 
     -- За сколько секунд до конца BlockStart (и Parry) включается следующая анимация.
     -- Даёт плавный переход без рывка: две анимации перекрываются на это время.
-    LoopBlendTime = 0.1,
+    LoopBlendTime = 0.04,
 
     -- Состояния, в которых реакция Hit1..3 не должна проигрываться (используется, если
     -- реакция не должна выглядеть как прерывание текущего действия).
@@ -129,6 +138,10 @@ function CombatAnimationConfig.IsAssigned(animationId)
 
     -- "rbxassetid://0", "rbxassetid://000" - заглушки
     return animationId:match("^rbxassetid://0*$") == nil
+end
+
+function CombatAnimationConfig.IsAttackSlot(slot)
+    return CombatAnimationConfig.Slots[slot] == attackSettings
 end
 
 -- ID анимации для слота: сначала оружие, затем общие. nil, если не назначена.
@@ -184,7 +197,7 @@ end
 
 -- Слоты, которые использует код боевых анимаций (клиент игрока и NPC).
 CombatAnimationConfig.RequiredSlots = {
-    "Attack", "BlockStart", "BlockLoop", "BlockHit", "Parry", "Parried",
+    "Attack", "Light1", "Light2", "Light3", "BlockStart", "BlockLoop", "BlockHit", "Parry", "Parried",
     "Hit1", "Hit2", "Hit3", "Stunned", "Dodge", "UnarmedIdle"
 }
 

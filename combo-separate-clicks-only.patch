@@ -1,0 +1,56 @@
+diff --git a/src/StarterPlayer/StarterPlayerScripts/CombatController.client.lua b/src/StarterPlayer/StarterPlayerScripts/CombatController.client.lua
+--- a/src/StarterPlayer/StarterPlayerScripts/CombatController.client.lua
++++ b/src/StarterPlayer/StarterPlayerScripts/CombatController.client.lua
+@@ -4,7 +4,7 @@
+ --   CombatRequest("Attack"), CombatStateRequest("BlockStart" | "BlockEnd" | "Sync").
+ --
+ -- ЛКМ: атака или одно нажатие в буфер во время текущего удара.
+--- Holding LMB repeats attack requests, including during the current swing.
++-- Each attack request requires a separate LMB press.
+ -- ПКМ или F (удерживать): блок. Пока блок удерживается, атаки не отправляются.
+ -- Работает и без оружия, и с экипированным Tool, у которого есть атрибут CombatWeaponId.
+ --
+@@ -46,7 +46,6 @@
+     [CombatStates.Dead] = true,
+ }
+ 
+-local attackHeld = false
+ local blockHeld = false
+ local nextBlockRequestAt = 0
+ 
+@@ -136,7 +135,6 @@
+     end
+ 
+     if input.UserInputType == Enum.UserInputType.MouseButton1 then
+-        attackHeld = true
+         tryAttack()
+     elseif isBlockInput(input) then
+         blockHeld = true
+@@ -147,26 +145,20 @@
+ 
+ -- Отпускание обрабатывается без проверки gameProcessed: блок не должен "залипнуть"
+ UserInputService.InputEnded:Connect(function(input)
+-    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+-        attackHeld = false
+-    elseif isBlockInput(input) then
++    if isBlockInput(input) then
+         releaseBlock()
+     end
+ end)
+ 
+ -- Окно потеряло фокус: отпускание кнопки мы не увидим, поэтому сбрасываем всё сами
+ UserInputService.WindowFocusReleased:Connect(function()
+-    attackHeld = false
+     releaseBlock()
+ end)
+ 
+--- Held attack input can also fill the combo buffer.
+ -- Зажатие блока: повторяем запрос, пока сервер его не примет.
+ RunService.Heartbeat:Connect(function()
+     if blockHeld then
+         requestBlock()
+-    elseif attackHeld then
+-        tryAttack()
+     end
+ end)
+ 

@@ -73,7 +73,7 @@ CombatConfig.Weapons = {
         AttackTiming = {
             Startup = 0.18,
             Active = 0.15,
-            Recovery = 0.25,
+            Recovery = 0.15,
             CanDodgeDuringRecovery = true,
             CanBlockDuringRecovery = true,
         },
@@ -86,7 +86,14 @@ CombatConfig.Weapons = {
         DisplayName = "Sword",
         Equippable = true,
         Handle = {
-            Size = Vector3.new(0.4, 4, 0.4),
+            Animated = true, -- R6 Right Arm -> Handle uses Motor6D.
+            Size = Vector3.new(0.4, 0.4, 4),
+            -- Bind pose from the animation authoring rig.
+            Grip = {
+                Name = "Motor6D",
+                C0 = CFrame.new(),
+                C1 = CFrame.new(0, 0.926, 1.356),
+            },
             Color = Color3.fromRGB(190, 195, 205),
             Material = Enum.Material.Metal,
         },

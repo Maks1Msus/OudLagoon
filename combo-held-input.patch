@@ -1,0 +1,107 @@
+diff --git a/src/StarterPlayer/StarterPlayerScripts/CombatController.client.lua b/src/StarterPlayer/StarterPlayerScripts/CombatController.client.lua
+--- a/src/StarterPlayer/StarterPlayerScripts/CombatController.client.lua
++++ b/src/StarterPlayer/StarterPlayerScripts/CombatController.client.lua
+@@ -4,7 +4,7 @@
+ --   CombatRequest("Attack"), CombatStateRequest("BlockStart" | "BlockEnd" | "Sync").
+ --
+ -- ЛКМ: атака или одно нажатие в буфер во время текущего удара.
+--- Зажатие ЛКМ: повторные запросы в Idle.
++-- Holding LMB repeats attack requests, including during the current swing.
+ -- ПКМ или F (удерживать): блок. Пока блок удерживается, атаки не отправляются.
+ -- Работает и без оружия, и с экипированным Tool, у которого есть атрибут CombatWeaponId.
+ --
+@@ -66,7 +66,7 @@
+ 
+ -- АТАКА -----------------------------------------------------------------
+ 
+-local function tryAttack(repeatHeld)
++local function tryAttack()
+     local humanoid = getHumanoid()
+ 
+     if not humanoid or humanoid.Health <= 0 then
+@@ -85,7 +85,7 @@
+ 
+     nextAttackRequestAt = now + ATTACK_REQUEST_INTERVAL
+ 
+-    CombatRequest:FireServer("Attack", repeatHeld)
++    CombatRequest:FireServer("Attack")
+ end
+ 
+ -- БЛОК ------------------------------------------------------------------
+@@ -160,13 +160,13 @@
+     releaseBlock()
+ end)
+ 
+--- Зажатие ЛКМ повторяет запросы в Idle, а в буфер идёт отдельное нажатие.
++-- Held attack input can also fill the combo buffer.
+ -- Зажатие блока: повторяем запрос, пока сервер его не примет.
+ RunService.Heartbeat:Connect(function()
+     if blockHeld then
+         requestBlock()
+-    elseif attackHeld and combatState == CombatStates.Idle then
+-        tryAttack(true)
++    elseif attackHeld then
++        tryAttack()
+     end
+ end)
+ 
+diff --git a/src/ServerScriptService/Services/CombatService.lua b/src/ServerScriptService/Services/CombatService.lua
+--- a/src/ServerScriptService/Services/CombatService.lua
++++ b/src/ServerScriptService/Services/CombatService.lua
+@@ -541,7 +541,7 @@
+ end
+ 
+ -- Атака игрока по запросу клиента.
+-function CombatService:PerformAttack(player, repeatHeld)
++function CombatService:PerformAttack(player)
+     local profile = DataService:GetProfile(player)
+ 
+     if not profile then
+@@ -554,10 +554,6 @@
+     if character and character.Parent and humanoid and humanoid.Health > 0
+         and CombatStateService:GetState(character) == CombatStates.Attacking
+     then
+-        if repeatHeld then
+-            return false, "AlreadyAttacking"
+-        end
+-
+         local attack = Attacks[character]
+ 
+         if not attack or attack.Player ~= player
+@@ -567,7 +563,11 @@
+             return false, "NoCombo"
+         end
+ 
+-        return ComboService:BufferAttack(character)
++        local buffered, reason = ComboService:BufferAttack(character)
++        if buffered then
++            Log(player.Name, "attack", attack.AttackId, "combo input buffered")
++        end
++        return buffered, reason
+     end
+ 
+     return BeginAttack(self, character, player, nil)
+@@ -620,6 +620,7 @@
+     nextAttack.AttackId = nextAttackId
+     nextAttack.Move = move
+     Attacks[character] = nextAttack
++    Log(attack.Player.Name, "attack", nextAttackId, moveId, "continued", attackId)
+ end
+ 
+ -- СОСТОЯНИЕ И БЛОК (СЕТЬ) -----------------------------------------------
+@@ -749,11 +750,11 @@
+     -- RemoteService добавляет лимит частоты и проверку аргументов.
+     RemoteService:OnEvent("CombatRequest", {
+         RateLimit = 15,
+-        Validate = function(action, repeatHeld)
+-            return action == "Attack" and (repeatHeld == nil or repeatHeld == true)
++        Validate = function(action)
++            return action == "Attack"
+         end,
+-    }, function(player, _action, repeatHeld)
+-        self:PerformAttack(player, repeatHeld)
++    }, function(player)
++        self:PerformAttack(player)
+     end)
+ 
+     print("[CombatService] Initialized")

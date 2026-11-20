@@ -1,0 +1,83 @@
+diff --git a/src/ReplicatedStorage/Shared/Config/CombatAnimationConfig.lua b/src/ReplicatedStorage/Shared/Config/CombatAnimationConfig.lua
+--- a/src/ReplicatedStorage/Shared/Config/CombatAnimationConfig.lua
++++ b/src/ReplicatedStorage/Shared/Config/CombatAnimationConfig.lua
+@@ -43,8 +43,13 @@
+ -- Слоты: что именно можно проиграть и как.
+ -- Priority - приоритет AnimationTrack (перекрывает приоритет, заданный в самом ассете).
+ -- Looped   - зацикливать ли анимацию.
++local attackSettings = { Priority = Enum.AnimationPriority.Action2, Looped = false }
++
+ CombatAnimationConfig.Slots = {
+-    Attack = { Priority = Enum.AnimationPriority.Action2, Looped = false },
++    Attack = attackSettings,
++    Light1 = attackSettings,
++    Light2 = attackSettings,
++    Light3 = attackSettings,
+ 
+     BlockStart = { Priority = Enum.AnimationPriority.Action, Looped = false },
+     BlockLoop = { Priority = Enum.AnimationPriority.Action, Looped = true },
+@@ -72,11 +77,17 @@
+ CombatAnimationConfig.Weapons = {
+     Unarmed = {
+         Attack = "rbxassetid://102078600906488",
++        Light1 = "rbxassetid://0",
++        Light2 = "rbxassetid://0",
++        Light3 = "rbxassetid://0",
+         UnarmedIdle = "rbxassetid://89432023654340",
+     },
+ 
+     Sword = {
+         Attack = "rbxassetid://91695651580130",
++        Light1 = "rbxassetid://0",
++        Light2 = "rbxassetid://0",
++        Light3 = "rbxassetid://0",
+     },
+ }
+ 
+@@ -131,6 +142,10 @@
+     return animationId:match("^rbxassetid://0*$") == nil
+ end
+ 
++function CombatAnimationConfig.IsAttackSlot(slot)
++    return CombatAnimationConfig.Slots[slot] == attackSettings
++end
++
+ -- ID анимации для слота: сначала оружие, затем общие. nil, если не назначена.
+ function CombatAnimationConfig.GetAnimationId(slot, weaponId)
+     local weapon = weaponId and CombatAnimationConfig.Weapons[weaponId]
+@@ -184,7 +199,7 @@
+ 
+ -- Слоты, которые использует код боевых анимаций (клиент игрока и NPC).
+ CombatAnimationConfig.RequiredSlots = {
+-    "Attack", "BlockStart", "BlockLoop", "BlockHit", "Parry", "Parried",
++    "Attack", "Light1", "Light2", "Light3", "BlockStart", "BlockLoop", "BlockHit", "Parry", "Parried",
+     "Hit1", "Hit2", "Hit3", "Stunned", "Dodge", "UnarmedIdle"
+ }
+ 
+diff --git a/src/StarterPlayer/StarterPlayerScripts/CombatAnimationController.client.lua b/src/StarterPlayer/StarterPlayerScripts/CombatAnimationController.client.lua
+--- a/src/StarterPlayer/StarterPlayerScripts/CombatAnimationController.client.lua
++++ b/src/StarterPlayer/StarterPlayerScripts/CombatAnimationController.client.lua
+@@ -316,7 +316,7 @@
+     if track
+         and track == activeTrack
+         and track.IsPlaying
+-        and slot ~= SLOT_ATTACK
++        and not CombatAnimationConfig.IsAttackSlot(slot)
+         and slot ~= SLOT_PARRY
+     then
+         return true
+@@ -529,7 +529,13 @@
+             animatedAttackId = payload.AttackId
+             unarmedIdleToken += 1
+             unarmedIdleExpiresAt = 0
+-            playSlot(SLOT_ATTACK, weaponId, restoring and elapsed or nil)
++            local moveId = payload.MoveId
++            local startAt = restoring and elapsed or nil
++            if not (moveId ~= SLOT_ATTACK and CombatAnimationConfig.IsAttackSlot(moveId)
++                and playSlot(moveId, weaponId, startAt))
++            then
++                playSlot(SLOT_ATTACK, weaponId, startAt)
++            end
+         end
+     elseif state == CombatStates.Blocking then
+         enterBlock(weaponId, restoring and elapsed or 0)

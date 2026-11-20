@@ -15,7 +15,7 @@
 --   PlayReaction(model, "Parried" | "Stunned") -> явные реакции (CombatService): удар NPC
 --                               парировали / NPC оглушила способность
 --   Idle / Dead              -> анимация останавливается
---   Attacking (новый удар)   -> Attack (одна анимация на все фазы удара)
+--   Attacking (новый удар)   -> MoveId, Light1 for a single NPC attack, then Attack fallback
 --
 -- Логика повторяет CombatAnimationController (клиент игроков). Если правила переходов
 -- изменятся, менять нужно оба места; позже её можно вынести в общий модуль.
@@ -27,6 +27,7 @@ local CombatAnimationConfig = require(ReplicatedStorage.Shared.Config.CombatAnim
 local CombatStates = require(ReplicatedStorage.Shared.Constants.CombatStates)
 
 local CombatStateService = require(script.Parent.CombatStateService)
+local AttackAnimationSync = require(ReplicatedStorage.Shared.Combat.AttackAnimationSync)
 
 local NPCCombatAnimationService = {}
 
@@ -69,6 +70,10 @@ local function GetTrack(entry, slot)
 
     if not animationId then
         return nil
+    end
+
+    if CombatAnimationConfig.IsAttackSlot(slot) then
+        AttackAnimationSync.Preload(animationId)
     end
 
     local key = slot .. "|" .. animationId
@@ -116,6 +121,7 @@ local function StopActive(entry, fadeTime)
     entry.ActiveSlot = nil
 
     if track then
+        AttackAnimationSync.Stop(track)
         track:Stop(fadeTime or Settings.FadeOutTime)
     end
 end
@@ -240,9 +246,24 @@ local function OnStateChanged(character, newState, oldState)
     end
 
     if newState == CombatStates.Attacking then
-        -- Смена фаз удара состояние не меняет, поэтому сюда попадает только начало нового удара
-        if oldState ~= CombatStates.Attacking then
-            PlaySlot(entry, "Attack")
+        local attackId, moveId = CombatStateService:GetAttackIdentity(character)
+        if attackId and entry.AnimatedAttackId ~= attackId then
+            entry.AnimatedAttackId = attackId
+
+            local slot = moveId
+            if not CombatAnimationConfig.IsAttackSlot(slot) or not GetTrack(entry, slot) then
+                slot = "Light1"
+            end
+            if not GetTrack(entry, slot) then
+                slot = "Attack"
+            end
+            PlaySlot(entry, slot)
+            if entry.ActiveTrack then
+                AttackAnimationSync.Update(
+                    entry.ActiveTrack,
+                    CombatStateService:GetAttackAnimationState(character)
+                )
+            end
         end
     elseif newState == CombatStates.Blocking then
         -- Блок уже показывается (или идёт его реакция): повтор события ничего не меняет
@@ -386,6 +407,17 @@ function NPCCombatAnimationService:Init()
     CombatAnimationConfig.WarnIfInvalid("server")
 
     CombatStateService:OnStateChanged(OnStateChanged)
+    CombatStateService:OnAttackPhaseChanged(function(character, _phase, attackId)
+        local entry = Entries[character]
+        if entry and entry.ActiveTrack and entry.AnimatedAttackId == attackId
+            and CombatAnimationConfig.IsAttackSlot(entry.ActiveSlot)
+        then
+            AttackAnimationSync.Update(
+                entry.ActiveTrack,
+                CombatStateService:GetAttackAnimationState(character)
+            )
+        end
+    end)
     CombatStateService:OnDamageApplied(OnDamageApplied)
 
     print("[NPCCombatAnimationService] Initialized")

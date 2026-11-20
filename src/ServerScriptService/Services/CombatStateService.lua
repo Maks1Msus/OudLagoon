@@ -114,6 +114,7 @@ local function NewRecord()
         Dodge = nil,
         Stun = nil,
         StunImmuneUntil = 0,
+        AttackRestrictions = setmetatable({}, { __mode = "k" }),
         -- Кулдауны переживают смену состояния
         Cooldowns = { Dodge = 0 },
 
@@ -166,6 +167,7 @@ local function CreateSignal()
     return signal
 end
 
+local RecoveryFinished = CreateSignal()
 local StateChanged = CreateSignal()
 local AttackPhaseChanged = CreateSignal()
 local DamageApplied = CreateSignal()
@@ -184,6 +186,10 @@ function CombatStateService:OnStateChanged(callback)
 end
 
 -- callback(character, phase, attackId). Возвращает функцию отписки.
+function CombatStateService:OnRecoveryFinished(callback)
+    return RecoveryFinished.Connect(callback)
+end
+
 function CombatStateService:OnAttackPhaseChanged(callback)
     return AttackPhaseChanged.Connect(callback)
 end
@@ -191,7 +197,43 @@ end
 -- ПРОВЕРКИ --------------------------------------------------------------
 
 -- Можно ли сейчас перейти в newState. Возвращает true либо false, <причина>.
+local function IsComboAttackRestricted(record)
+    for attacker, restriction in pairs(record.AttackRestrictions) do
+        local source = Records[attacker]
+        local humanoid = attacker:FindFirstChildOfClass("Humanoid")
+        local attack = source and source.Attack
+        if attacker.Parent and humanoid and humanoid.Health > 0
+            and source.State == State.Attacking and attack == restriction.Attack
+            and not (restriction.UntilRecovery and attack.Phase == Phase.Recovery)
+        then
+            return true
+        end
+        record.AttackRestrictions[attacker] = nil
+    end
+    return false
+end
+
+local function GetComboParryWindow(record, now)
+    for attacker, restriction in pairs(record.AttackRestrictions) do
+        local window = restriction.ParryWindow
+        local source = Records[attacker]
+        local humanoid = attacker:FindFirstChildOfClass("Humanoid")
+        if window and not window.Consumed and now < window.EndsAt
+            and attacker.Parent and humanoid and humanoid.Health > 0
+            and source and source.State == State.Attacking
+            and source.Attack == window.Attack and restriction.Attack == window.Attack
+            and source.Attack.Phase == Phase.Startup
+        then
+            return window
+        end
+    end
+    return nil
+end
+
 local function CanEnter(record, newState, now)
+    if newState == State.Attacking and IsComboAttackRestricted(record) then
+        return false, "ComboDefenseOnly"
+    end
     local allowed = AllowedTransitions[record.State]
 
     if not allowed or not allowed[newState] then
@@ -280,7 +322,7 @@ end
 --   Data     - данные подзаписи (для Attacking: Phase, CanBlockDuringRecovery,
 --              CanDodgeDuringRecovery, ...).
 -- Возвращает true, <TransitionId> либо false, <причина>.
-function CombatStateService:Transition(character, newState, options)
+local function Transition(self, character, newState, options, previousAttackId, comboParry)
     if not ValidStates[newState] then
         return false, "UnknownState"
     end
@@ -288,7 +330,24 @@ function CombatStateService:Transition(character, newState, options)
     local record = GetRecord(character)
     local now = os.clock()
 
-    local allowed, reason = CanEnter(record, newState, now)
+    local allowed, reason
+    if comboParry then
+        local canDefend = record.State == State.Idle or record.State == State.Blocking
+            or (record.State == State.Stunned and record.Stun and record.Stun.Source == "Hit")
+        allowed = newState == State.Blocking and canDefend
+            and GetComboParryWindow(record, now) == comboParry
+        reason = "ComboParryUnavailable"
+    elseif previousAttackId then
+        if IsComboAttackRestricted(record) then
+            return false, "ComboDefenseOnly"
+        end
+        local attack = record.Attack
+        allowed = newState == State.Attacking and record.State == State.Attacking
+            and attack and attack.AttackId == previousAttackId and attack.Phase == Phase.Recovery
+        reason = "InvalidComboTransition"
+    else
+        allowed, reason = CanEnter(record, newState, now)
+    end
 
     if not allowed then
         return false, reason
@@ -297,6 +356,7 @@ function CombatStateService:Transition(character, newState, options)
     options = options or {}
 
     local oldState = record.State
+    local oldAttack = record.Attack
     local oldKey = SubRecordKey[oldState]
 
     if oldState == State.Stunned then
@@ -325,6 +385,7 @@ function CombatStateService:Transition(character, newState, options)
 
             data.AttackId = attackCounter
             data.Phase = data.Phase or Phase.Startup
+            data.AnimationPhaseStartedAt = workspace:GetServerTimeNow()
             data.PhaseStartedAt = now
             data.PhaseEndsAt = nil
             data.HitTargets = {} -- кого уже поразил этот удар (используется на этапе 2)
@@ -334,6 +395,23 @@ function CombatStateService:Transition(character, newState, options)
         end
 
         record[newKey] = data
+
+        if previousAttackId and oldAttack.ComboRestrictedTargets then
+            data.ComboRestrictedTargets = oldAttack.ComboRestrictedTargets
+            for target in pairs(data.ComboRestrictedTargets) do
+                local targetRecord = Records[target]
+                local restriction = targetRecord and targetRecord.AttackRestrictions[character]
+                if restriction and restriction.Attack == oldAttack then
+                    if restriction.HitAttackId == oldAttack.AttackId then
+                        restriction.Attack = data
+                        restriction.UntilRecovery = true
+                        restriction.ParryWindow = nil
+                    else
+                        targetRecord.AttackRestrictions[character] = nil
+                    end
+                end
+            end
+        end
     end
 
     -- Кулдаун уклонения отсчитывается от его начала и не зависит от состояния
@@ -349,9 +427,39 @@ function CombatStateService:Transition(character, newState, options)
 
     Log(character.Name, oldState, "->", newState, "#" .. record.TransitionId)
 
-    StateChanged.Fire(character, newState, oldState, record.TransitionId)
+    local transitionId = record.TransitionId
+    StateChanged.Fire(character, newState, oldState, transitionId)
 
-    return true, record.TransitionId
+    return true, transitionId
+end
+
+function CombatStateService:Transition(character, newState, options)
+    return Transition(self, character, newState, options)
+end
+
+function CombatStateService:GetAttackAnimationState(character)
+    local record = character and Records[character]
+    local attack = record and record.Attack
+    if not attack then
+        return nil
+    end
+
+    return {
+        AttackId = attack.AttackId,
+        Phase = attack.Phase,
+        StartedAt = attack.AnimationPhaseStartedAt,
+        Duration = attack.AnimationPhaseDuration,
+        Timing = attack.AnimationTiming and table.clone(attack.AnimationTiming),
+    }
+end
+
+function CombatStateService:GetAttackIdentity(character)
+    local record = Records[character]
+    local attack = record and record.Attack
+    if attack then
+        return attack.AttackId, attack.MoveId, attack.ComboIndex
+    end
+    return nil, nil, nil
 end
 
 -- Меняет фазу текущей атаки. attackId защищает от устаревших вызовов: если атака уже
@@ -376,6 +484,8 @@ function CombatStateService:SetAttackPhase(character, attackId, phase, duration)
     local now = os.clock()
 
     attack.Phase = phase
+    attack.AnimationPhaseStartedAt = workspace:GetServerTimeNow()
+    attack.AnimationPhaseDuration = duration
     attack.PhaseStartedAt = now
     attack.PhaseEndsAt = duration and (now + duration) or nil
 
@@ -411,7 +521,8 @@ function CombatStateService:ApplyStun(character, duration, source)
 
     local now = os.clock()
 
-    if now < record.StunImmuneUntil then
+    -- A successful parry must interrupt the attacker even during post-hit immunity.
+    if now < record.StunImmuneUntil and source ~= "Parry" then
         return false, "StunImmune"
     end
 
@@ -442,6 +553,8 @@ local function IsValidTiming(timing)
         and IsFiniteNumber(timing.Startup) and timing.Startup >= 0
         and IsFiniteNumber(timing.Active) and timing.Active > 0
         and IsFiniteNumber(timing.Recovery) and timing.Recovery >= 0
+        and (timing.RecoveryOnHit == nil
+            or (IsFiniteNumber(timing.RecoveryOnHit) and timing.RecoveryOnHit >= 0))
 end
 
 -- Запускает атаку: Attacking (Startup) -> Active -> Recovery -> Idle.
@@ -449,26 +562,41 @@ end
 -- поэтому любое прерывание (оглушение, смерть, уклонение из Recovery) обрывает цепочку,
 -- а устаревшие шаги ничего не меняют и не наносят урона.
 -- Возвращает true, <AttackId> либо false, <причина>.
-function CombatStateService:StartAttack(character, timing)
+local function StartAttack(self, character, timing, data, previousAttackId)
     if not IsValidTiming(timing) then
         return false, "InvalidTiming"
     end
 
-    local ok, reason = self:Transition(character, State.Attacking, {
+    local ok, transitionId = Transition(self, character, State.Attacking, {
         Data = {
             Phase = Phase.Startup,
+            AnimationPhaseDuration = timing.Startup,
+            AnimationTiming = {
+                Startup = timing.Startup,
+                Active = timing.Active,
+                Recovery = timing.Recovery,
+            },
+            MoveId = data and data.MoveId,
+            ComboIndex = data and data.ComboIndex,
             CanBlockDuringRecovery = timing.CanBlockDuringRecovery == true,
             CanDodgeDuringRecovery = timing.CanDodgeDuringRecovery == true,
         },
-    })
+    }, previousAttackId)
 
     if not ok then
-        return false, reason
+        return false, transitionId
     end
 
-    local attack = Records[character].Attack
+    local record = Records[character]
+    if not record or record.TransitionId ~= transitionId then
+        return false, "AttackInterrupted"
+    end
+
+    local attack = record.Attack
     local attackId = attack.AttackId
 
+    attack.Recovery = timing.Recovery
+    attack.RecoveryOnHit = timing.RecoveryOnHit
     attack.PhaseEndsAt = os.clock() + timing.Startup
 
     self:Delay(character, timing.Startup, function()
@@ -476,13 +604,27 @@ function CombatStateService:StartAttack(character, timing)
             return
         end
 
+        if not self:IsAttackActive(character, attackId) then
+            return
+        end
+
         self:Delay(character, timing.Active, function()
-            if not self:SetAttackPhase(character, attackId, Phase.Recovery, timing.Recovery) then
+            if not self:SetAttackPhase(character, attackId, Phase.Recovery, attack.Recovery) then
                 return
             end
 
-            self:Delay(character, timing.Recovery, function()
-                self:Transition(character, State.Idle)
+            if self:GetAttackId(character) ~= attackId then
+                return
+            end
+
+            self:Delay(character, attack.Recovery, function()
+                -- Notify combat before falling back to Idle. A continuation
+                -- replaces the attack and invalidates this recovery callback.
+                RecoveryFinished.Fire(character, attackId)
+
+                if self:GetAttackId(character) == attackId then
+                    self:Transition(character, State.Idle)
+                end
             end)
         end)
     end)
@@ -491,6 +633,57 @@ function CombatStateService:StartAttack(character, timing)
 end
 
 -- true, пока атака attackId идёт и находится в фазе Active (окно регистрации попаданий).
+function CombatStateService:StartAttack(character, timing, data)
+    return StartAttack(self, character, timing, data)
+end
+
+function CombatStateService:StartComboAttack(character, timing, data, previousAttackId)
+    if type(previousAttackId) ~= "number" then
+        return false, "MissingAttackId"
+    end
+    return StartAttack(self, character, timing, data, previousAttackId)
+end
+
+function CombatStateService:UseHitRecovery(character, attackId)
+    if self:IsAttackActive(character, attackId) then
+        local attack = Records[character].Attack
+        attack.Recovery = attack.RecoveryOnHit or attack.Recovery
+        if attack.AnimationTiming then
+            attack.AnimationTiming.Recovery = attack.Recovery
+        end
+    end
+end
+
+-- A landed combo hit reserves the gap for defensive actions.
+-- The source attack identity releases the restriction on interruption/reset.
+function CombatStateService:RestrictComboCounterattack(character, attackId, target, hasNextMove)
+    if not self:IsAttackActive(character, attackId) then
+        return false
+    end
+
+    local attack = Records[character].Attack
+    local targetRecord = GetRecord(target)
+    if not hasNextMove then
+        targetRecord.AttackRestrictions[character] = nil
+        return true
+    end
+
+    attack.ComboRestrictedTargets = attack.ComboRestrictedTargets
+        or setmetatable({}, { __mode = "k" })
+    attack.ComboRestrictedTargets[target] = true
+    targetRecord.AttackRestrictions[character] = {
+        Attack = attack,
+        HitAttackId = attackId,
+        UntilRecovery = false,
+    }
+
+    -- A prior hit-stun immunity must not leave a counterattack running.
+    if targetRecord.State == State.Attacking then
+        self:Transition(target, State.Idle)
+    end
+    return true
+end
+
 function CombatStateService:IsAttackActive(character, attackId)
     local record = Records[character]
     local attack = record and record.Attack
@@ -540,6 +733,60 @@ end
 -- Окно парирования отсчитывается серверным временем от этого момента.
 -- Повторный вызов во время блока отклоняется и окно парирования НЕ обновляет.
 -- Возвращает true, <TransitionId> либо false, <причина>.
+-- Grants only victims actually hit by the preceding move an input window.
+function CombatStateService:OpenComboParryWindow(character, attackId, previousAttackId, duration)
+    local record = Records[character]
+    local attack = record and record.Attack
+    if not attack or record.State ~= State.Attacking or attack.AttackId ~= attackId
+        or attack.Phase ~= Phase.Startup or not IsFiniteNumber(duration) or duration <= 0
+    then
+        return false, "InvalidComboParryWindow"
+    end
+
+    local endsAt = math.min(os.clock() + duration, attack.PhaseEndsAt or os.clock())
+    if endsAt <= os.clock() then
+        return false, "NoStartupWindow"
+    end
+
+    for target in pairs(attack.ComboRestrictedTargets or {}) do
+        local targetRecord = Records[target]
+        local restriction = targetRecord and targetRecord.AttackRestrictions[character]
+        if restriction and restriction.Attack == attack
+            and restriction.HitAttackId == previousAttackId
+        then
+            restriction.ParryWindow = {
+                Attacker = character,
+                Attack = attack,
+                EndsAt = endsAt,
+                Consumed = false,
+            }
+            Log(target.Name, "combo parry window", character.Name, attackId, duration)
+        end
+    end
+    return true
+end
+
+-- Only a fresh client press calls this. Ordinary BlockStart keeps its normal rules.
+function CombatStateService:TryComboParry(character)
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    if not character or not character.Parent or not humanoid or humanoid.Health <= 0 then
+        return false, "CharacterUnavailable"
+    end
+
+    local window = GetComboParryWindow(GetRecord(character), os.clock())
+    if not window then
+        return false, "NoComboParryWindow"
+    end
+
+    local started, reason = Transition(self, character, State.Blocking, {
+        Data = { ComboParry = window },
+    }, nil, window)
+    if started then
+        window.Consumed = true
+    end
+    return started, reason
+end
+
 function CombatStateService:StartBlock(character)
     return self:Transition(character, State.Blocking)
 end
@@ -561,13 +808,24 @@ end
 
 -- true, пока идёт окно парирования: блок активен и с его начала прошло меньше ParryWindow.
 -- Считается по серверному времени, отдельный таймер не нужен.
-function CombatStateService:IsParryActive(character)
+function CombatStateService:IsParryActive(character, attacker, attackId)
     local record = GetRecord(character)
     local block = record.Block
 
-    return record.State == State.Blocking
-        and block ~= nil
-        and os.clock() < block.ParryEndsAt
+    if record.State ~= State.Blocking or not block then
+        return false
+    end
+
+    local window = block.ComboParry
+    local source = attacker and Records[attacker]
+    if window and window.Attacker == attacker and source
+        and source.State == State.Attacking and source.Attack == window.Attack
+        and source.Attack.AttackId == attackId and source.Attack.Phase == Phase.Active
+    then
+        return true
+    end
+
+    return os.clock() < block.ParryEndsAt
 end
 
 -- ПОЛУЧЕНИЕ УРОНА -------------------------------------------------------
@@ -634,7 +892,7 @@ end
 -- sourcePosition - Vector3 позиции атакующего (для проверки направления).
 -- Возвращает { Result = DamageResults.*, Damage = нанесено, Absorbed = поглощено }.
 -- Оглушение атакующего при парировании появится вместе с ApplyStun (следующий этап).
-function CombatStateService:ApplyDamage(character, damage, sourcePosition)
+function CombatStateService:ApplyDamage(character, damage, sourcePosition, attacker, attackId)
     local function Outcome(result, applied)
         return {
             Result = result,
@@ -657,7 +915,7 @@ function CombatStateService:ApplyDamage(character, damage, sourcePosition)
     local applied = damage
 
     if self:IsBlocking(character) and self:IsDamageFromFront(character, sourcePosition) then
-        if self:IsParryActive(character) then
+        if self:IsParryActive(character, attacker, attackId) then
             result = DamageResult.Parried
             applied = 0
         else

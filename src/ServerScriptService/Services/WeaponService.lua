@@ -56,6 +56,74 @@ local function FindTools(player, weaponId)
     return found
 end
 
+-- Keep the Tool lifecycle while making its R6 Handle an animation channel.
+local function BindAnimatedHandle(tool, handle, handleConfig)
+    local gripConfig = handleConfig.Grip or {}
+    local motor
+    local armConnection
+    local equipVersion = 0
+
+    local function ClearGrip()
+        equipVersion += 1
+        if armConnection then
+            armConnection:Disconnect()
+            armConnection = nil
+        end
+        if motor then
+            motor:Destroy()
+            motor = nil
+        end
+    end
+
+    tool.Equipped:Connect(function()
+        ClearGrip()
+        local version = equipVersion
+        local character = tool.Parent
+        local arm = character and character:FindFirstChild("Right Arm")
+        if not arm or not arm:IsA("BasePart") then
+            warn("[WeaponService] Animated Handle requires an R6 Right Arm:", tool.Name)
+            return
+        end
+
+        local function ReplaceGrip(candidate)
+            -- Roblox can add RightGrip before or after Equipped fires.
+            task.defer(function()
+                if version ~= equipVersion or tool.Parent ~= character
+                    or candidate.Parent ~= arm or candidate == motor
+                    or candidate.Name ~= "RightGrip"
+                    or not candidate:IsA("JointInstance")
+                    or candidate.Part0 ~= arm or candidate.Part1 ~= handle
+                then
+                    return
+                end
+
+                local replacement = Instance.new("Motor6D")
+                replacement.Name = gripConfig.Name or candidate.Name
+                replacement.Part0 = arm
+                replacement.Part1 = handle
+                replacement.C0 = gripConfig.C0 or candidate.C0
+                replacement.C1 = gripConfig.C1 or candidate.C1
+                replacement.Enabled = candidate.Enabled
+
+                if motor then
+                    motor:Destroy()
+                end
+                motor = replacement
+                candidate:Destroy()
+                replacement.Parent = arm
+            end)
+        end
+
+        armConnection = arm.ChildAdded:Connect(ReplaceGrip)
+        for _, child in ipairs(arm:GetChildren()) do
+            ReplaceGrip(child)
+        end
+    end)
+
+    tool.Unequipped:Connect(ClearGrip)
+    tool.Destroying:Connect(ClearGrip)
+end
+
 local function CreateTool(weaponId, weapon)
     local tool = Instance.new("Tool")
     tool.Name = weapon.DisplayName or weaponId
@@ -71,7 +139,12 @@ local function CreateTool(weaponId, weapon)
     handle.Color = handleConfig.Color or DEFAULT_HANDLE_COLOR
     handle.Material = handleConfig.Material or Enum.Material.Metal
     handle.Massless = true
+    handle.CanCollide = false
     handle.Parent = tool
+
+    if handleConfig.Animated then
+        BindAnimatedHandle(tool, handle, handleConfig)
+    end
 
     return tool
 end

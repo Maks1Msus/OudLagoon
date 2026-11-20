@@ -39,10 +39,10 @@ local player = Players.LocalPlayer
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 
-local CombatConfig = require(Shared:WaitForChild("Config"):WaitForChild("CombatConfig"))
 local CombatAnimationConfig = require(Shared:WaitForChild("Config"):WaitForChild("CombatAnimationConfig"))
 local CombatStates = require(Shared:WaitForChild("Constants"):WaitForChild("CombatStates"))
 local WeaponRegistry = require(Shared:WaitForChild("Weapons"):WaitForChild("WeaponRegistry"))
+local AttackAnimationSync = require(Shared:WaitForChild("Combat"):WaitForChild("AttackAnimationSync"))
 
 local Events = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("Events")
 local CombatStateChanged = Events:WaitForChild("CombatStateChanged")
@@ -95,6 +95,7 @@ local characterConnections = {}
 
 -- Состояние от сервера, пришедшее раньше, чем загрузился Animator
 local pendingPayload = nil
+local animatedAttackId = nil
 
 local function debugLog(...)
     if Settings.DebugLogging then
@@ -125,6 +126,10 @@ local function getTrack(slot, weaponId)
 
     if not animationId then
         return nil
+    end
+
+    if CombatAnimationConfig.IsAttackSlot(slot) then
+        AttackAnimationSync.Preload(animationId)
     end
 
     local key = slot .. "|" .. animationId
@@ -166,6 +171,7 @@ local function stopActive(fadeTime)
     playToken += 1
 
     if activeTrack then
+        AttackAnimationSync.Stop(activeTrack)
         activeTrack:Stop(fadeTime or Settings.FadeOutTime)
     end
 
@@ -228,10 +234,8 @@ local function resetTracks()
 end
 
 -- Заранее загружает все назначенные анимации, чтобы первый удар не запаздывал.
--- Заодно сверяет длину анимаций атаки с серверным таймингом (подсказка при создании анимаций).
 local function preload()
     local toPreload = {}
-    local attackTracks = {} -- [weaponId] = track
 
     local function add(slot, weaponId)
         local track = getTrack(slot, weaponId)
@@ -242,11 +246,6 @@ local function preload()
 
             if animation then
                 table.insert(toPreload, animation)
-            end
-
-            -- Длину сверяем только для анимаций конкретного оружия (у него есть тайминг)
-            if slot == SLOT_ATTACK and weaponId then
-                attackTracks[weaponId] = track
             end
         end
     end
@@ -263,39 +262,10 @@ local function preload()
         return
     end
 
-    local currentAnimator = animator
-
     task.spawn(function()
         pcall(function()
             ContentProvider:PreloadAsync(toPreload)
         end)
-
-        -- Персонаж мог смениться, пока шла загрузка
-        if animator ~= currentAnimator then
-            return
-        end
-
-        if not Settings.WarnOnLengthMismatch then
-            return
-        end
-
-        for weaponId, track in pairs(attackTracks) do
-            local weapon = CombatConfig.Weapons[weaponId]
-            local timing = weapon and weapon.AttackTiming
-
-            if timing and track.Length > 0 then
-                local expected = timing.Startup + timing.Active + timing.Recovery
-
-                if math.abs(track.Length - expected) > Settings.LengthTolerance then
-                    warn(string.format(
-                        "[CombatAnimation] %s Attack: animation is %.2fs, server swing is %.2fs",
-                        weaponId,
-                        track.Length,
-                        expected
-                    ))
-                end
-            end
-        end
     end)
 end
 
@@ -315,7 +285,7 @@ local function playSlot(slot, weaponId, startAt, onFinished)
     if track
         and track == activeTrack
         and track.IsPlaying
-        and slot ~= SLOT_ATTACK
+        and not CombatAnimationConfig.IsAttackSlot(slot)
         and slot ~= SLOT_PARRY
     then
         return true
@@ -523,24 +493,28 @@ local function applyState(payload, restoring)
     local elapsed = type(payload.Elapsed) == "number" and math.max(payload.Elapsed, 0) or 0
     local weaponId = getWeaponId()
 
-    if state == CombatStates.Attacking then
-        -- Событие со сменой фазы (без OldState) анимацию не запускает:
-        -- запуск только на подтверждённом переходе в Attacking или при восстановлении.
-        local isNewAttack = payload.OldState ~= nil and payload.OldState ~= CombatStates.Attacking
+    -- End the outgoing attack even when movement prevents UnarmedIdle.
+    if state ~= CombatStates.Attacking and activeTrack
+        and CombatAnimationConfig.IsAttackSlot(activeSlot)
+    then
+        stopActive()
+    end
 
-        if isNewAttack then
+    if state == CombatStates.Attacking then
+        if payload.AttackId ~= nil and payload.AttackId ~= animatedAttackId then
+            animatedAttackId = payload.AttackId
             unarmedIdleToken += 1
             unarmedIdleExpiresAt = 0
-
-            if activeSlot == "UnarmedIdle" then
-                stopActive()
+            local moveId = payload.MoveId
+            local startAt = restoring and elapsed or nil
+            if not (moveId ~= SLOT_ATTACK and CombatAnimationConfig.IsAttackSlot(moveId)
+                and playSlot(moveId, weaponId, startAt))
+            then
+                playSlot(SLOT_ATTACK, weaponId, startAt)
             end
-            playSlot(SLOT_ATTACK, weaponId)
-        elseif restoring then
-            -- Sync посреди удара: показываем атаку с текущего момента, если она ещё не идёт
-            if not (activeSlot == SLOT_ATTACK and activeTrack and activeTrack.IsPlaying) then
-                playSlot(SLOT_ATTACK, weaponId, elapsed)
-            end
+        end
+        if activeTrack and CombatAnimationConfig.IsAttackSlot(activeSlot) then
+            AttackAnimationSync.Update(activeTrack, payload.AttackAnimation)
         end
     elseif state == CombatStates.Blocking then
         enterBlock(weaponId, restoring and elapsed or 0)
