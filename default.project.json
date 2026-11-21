@@ -11,6 +11,11 @@
         "$path": "src/ReplicatedStorage/Shared"
       },
 
+      "VFX": {
+        "$className": "Folder",
+        "$ignoreUnknownInstances": true
+      },
+
       "Remotes": {
         "$className": "Folder"
       }

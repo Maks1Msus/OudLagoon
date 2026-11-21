@@ -430,9 +430,13 @@ function CombatService:RunActiveWindow(attack)
                     local tracksCombo = CanTrackCombo(attack)
                     if tracksCombo then
                         ComboService:ConfirmHit(character, attackId)
-                        CombatStateService:ApplyComboHitStun(
-                            target.Model, move.HitStun, character, attackId
-                        )
+                        if move.Finisher then
+                            CombatStateService:ApplyComboRagdoll(target.Model, character, attackId)
+                        else
+                            CombatStateService:ApplyComboHitStun(
+                                target.Model, move.HitStun, character, attackId
+                            )
+                        end
                     else
                         CombatStateService:ApplyStun(
                             target.Model, move and move.HitStun or weapon.HitStun, "Hit"
@@ -537,8 +541,8 @@ local function GetMoveTiming(weapon, move)
         Active = move.Active,
         Recovery = move.RecoveryOnMiss,
         RecoveryOnHit = move.RecoveryOnHit,
-        CanBlockDuringRecovery = weapon.AttackTiming.CanBlockDuringRecovery,
-        CanDodgeDuringRecovery = weapon.AttackTiming.CanDodgeDuringRecovery,
+        CanBlockDuringRecovery = not move.Finisher and weapon.AttackTiming.CanBlockDuringRecovery,
+        CanDodgeDuringRecovery = not move.Finisher and weapon.AttackTiming.CanDodgeDuringRecovery,
     }
 end
 
@@ -571,7 +575,7 @@ local function BeginAttack(self, character, owner, strength)
     end
 
     local started, attackId = CombatStateService:StartAttack(character, GetMoveTiming(weapon, move), {
-        MoveId = moveId,
+        WeaponId = weaponId, MoveId = moveId,
         ComboIndex = move and move.Index,
     })
 
@@ -608,7 +612,7 @@ function CombatService:BeginDashAttack(player, dashId)
     if not weapon or not move then return false, "NoDashLight" end
     local momentum = DashService:GetMomentum(character, dashId, move.Startup)
     local started, attackId = CombatStateService:StartDashAttack(character, GetMoveTiming(weapon, move), {
-        MoveId = "DashLight", ComboIndex = move.Index, DashMomentum = momentum,
+        WeaponId = weaponId, MoveId = "DashLight", ComboIndex = move.Index, DashMomentum = momentum,
     }, dashId)
     if not started then return false, attackId end
     Attacks[character] = {
@@ -695,7 +699,7 @@ local function ContinueCombo(character, attackId)
     local started, nextAttackId = CombatStateService:StartComboAttack(
         character,
         GetMoveTiming(attack.Weapon, move),
-        { MoveId = moveId, ComboIndex = move.Index },
+        { WeaponId = attack.WeaponId, MoveId = moveId, ComboIndex = move.Index },
         attackId
     )
     if not started then

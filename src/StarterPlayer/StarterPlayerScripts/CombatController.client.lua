@@ -46,6 +46,7 @@ local BLOCK_RETRY_INTERVAL = 0.1
 local CANNOT_ATTACK_STATES = {
     [CombatStates.Blocking] = true,
     [CombatStates.Stunned] = true,
+    [CombatStates.Ragdolled] = true,
     [CombatStates.Dead] = true,
 }
 
@@ -108,7 +109,7 @@ local function tryDodge()
     local now = os.clock()
     local directionId = getDashDirectionId()
     if not directionId or now < nextDodgeRequestAt then return end
-    if combatState == CombatStates.Stunned or combatState == CombatStates.Dead
+    if combatState == CombatStates.Stunned or combatState == CombatStates.Ragdolled or combatState == CombatStates.Dead
         or combatState == CombatStates.Dodging then return end
     local requestId = DashMovement.Request(directionId,
         combatState == CombatStates.Idle or combatState == CombatStates.Blocking)
@@ -132,7 +133,7 @@ local function requestBlock()
         return
     end
 
-    if combatState == CombatStates.Blocking or combatState == CombatStates.Dead
+    if combatState == CombatStates.Blocking or combatState == CombatStates.Ragdolled or combatState == CombatStates.Dead
         or combatState == CombatStates.Dodging then
         return
     end

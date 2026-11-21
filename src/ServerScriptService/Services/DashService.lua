@@ -118,7 +118,7 @@ function DashService:PerformDodge(player, directionId, requestId)
         return false, "PhysicsUnavailable"
     end
 
-    local started, id = CombatStateService:StartDodge(character, directionId)
+    local started, id = CombatStateService:StartDodge(character, directionId, requestId)
     if not started or CombatStateService:GetDodgeId(character) ~= id then
         Finish(character, record)
         return false, started and "DodgeInterrupted" or id

@@ -270,7 +270,8 @@ local function OnStateChanged(character, newState, oldState)
         if not (entry.ActiveSlot and BLOCK_SLOTS[entry.ActiveSlot]) then
             PlayBlock(entry)
         end
-    elseif newState == CombatStates.Idle or newState == CombatStates.Dead then
+    elseif newState == CombatStates.Idle or newState == CombatStates.Dead
+        or newState == CombatStates.Ragdolled then
         StopActive(entry)
     elseif newState == CombatStates.Stunned then
         ApplyStunReaction(entry)

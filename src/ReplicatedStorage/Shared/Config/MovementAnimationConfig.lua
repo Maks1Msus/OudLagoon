@@ -101,12 +101,12 @@ Config.Slots = {
 	IdleVariation2 = "rbxassetid://86150099556403",
 
 	-- Jumping and falling
-	JumpStart = "rbxassetid://0",
-	JumpFall = "rbxassetid://0",
+	JumpStart = "rbxassetid://127820021994709",
+	JumpFall = "rbxassetid://95799438038791",
 
 	-- Landing
-	Landing = "rbxassetid://0",
-	HardLanding = "rbxassetid://0",
+	Landing = "rbxassetid://70417728842663",
+	HardLanding = "rbxassetid://70417728842663",
 }
 
 function Config.GetAnimationId(slotName: string): string?

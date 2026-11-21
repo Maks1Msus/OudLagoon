@@ -15,6 +15,7 @@ local CombatStates = require(Shared:WaitForChild("Constants"):WaitForChild("Comb
 local WeaponRegistry = require(Shared:WaitForChild("Weapons"):WaitForChild("WeaponRegistry"))
 local AttackAnimationSync = require(Shared:WaitForChild("Combat"):WaitForChild("AttackAnimationSync"))
 local DashConfig = require(Shared:WaitForChild("Config"):WaitForChild("DashConfig"))
+local LocalSFX = require(Shared.Combat.CombatSFXClient)
 local CombatReactionSync = require(Shared:WaitForChild("Combat"):WaitForChild("CombatReactionSync"))
 
 local Events = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("Events")
@@ -508,6 +509,10 @@ local function applyState(payload, restoring)
             then
                 playSlot(SLOT_ATTACK, weaponId, startAt)
             end
+            if not restoring and activeTrack and CombatAnimationConfig.IsAttackSlot(activeSlot)
+                and characterHumanoid then
+                LocalSFX:AttackStarted(characterHumanoid.Parent, weaponId, moveId or "Light1", payload.AttackId)
+            end
         end
         if activeTrack and CombatAnimationConfig.IsAttackSlot(activeSlot) then
             AttackAnimationSync.Update(activeTrack, payload.AttackAnimation)
@@ -548,7 +553,7 @@ local function applyState(payload, restoring)
                 stopActive()
             end
         end
-    elseif state == CombatStates.Dead then
+    elseif state == CombatStates.Dead or state == CombatStates.Ragdolled then
         stopActive()
         stopReaction()
     end

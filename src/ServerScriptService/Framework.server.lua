@@ -10,13 +10,16 @@ local ProgressionService = require(
     Services.ProgressionService
 )
 local CombatStateService = require(Services.CombatStateService)
+local RagdollService = require(Services.RagdollService)
 local CombatMovementService = require(Services.CombatMovementService)
 local DashService = require(Services.DashService)
 local SwordPickupService = require(Services.SwordPickupService)
 local ComboService = require(Services.ComboService)
 local CombatService = require(Services.CombatService)
+local CombatSFXService = require(Services.CombatSFXService)
 local CombatVFXService = require(Services.CombatVFXService)
 local NPCCombatAnimationService = require(Services.NPCCombatAnimationService)
+local EnemyService = require(Services.EnemyService)
 
 local GameConfig = require(
     ReplicatedStorage.Shared.Config.GameConfig
@@ -29,13 +32,16 @@ ProgressionService:Init()
 
 CombatStateService:Init()
 CombatMovementService:Init()
+RagdollService:Init()
 DashService:Init()
 ComboService:Init()
 CombatService:Init()
 CombatVFXService:Init()
+CombatSFXService:Init()
 SwordPickupService:Init()
 
 NPCCombatAnimationService:Init()
+EnemyService:Init()
 TrainingDummyService:Init()
 DebugService:Init()
 

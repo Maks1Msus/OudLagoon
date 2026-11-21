@@ -8,6 +8,7 @@ CombatStateConfig.Movement = {
     BaseSpeedAttribute = "CombatBaseWalkSpeed",
     StateAttribute = "CombatMovementState",
     States = {
+        Ragdolled = { WalkSpeedMultiplier = 0, CanSprint = false, CanJump = false, LockRotation = true },
         Attacking = { WalkSpeedMultiplier = 0.5, CanSprint = false, CanJump = false },
         Blocking = { WalkSpeedMultiplier = 0.4, CanSprint = false, CanJump = false },
         Dodging = { WalkSpeedMultiplier = 1, CanSprint = true, CanJump = false, LockRotation = false },

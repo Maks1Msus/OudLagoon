@@ -38,6 +38,7 @@ local CombatVFXConfig = {
     States = {
         Blocking = Color3.fromRGB(125, 178, 211),
         Stunned = Color3.fromRGB(218, 159, 94),
+        Ragdolled = Color3.fromRGB(218, 130, 94),
         Dodging = Color3.fromRGB(130, 205, 192),
     },
     DodgeInvulnerability = {

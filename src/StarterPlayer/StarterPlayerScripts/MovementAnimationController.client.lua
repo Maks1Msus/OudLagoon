@@ -544,10 +544,10 @@ local function GetMovementRestriction()
         return nil
     end
     local state = Humanoid:GetAttribute(MovementRestrictions.StateAttribute)
-    if state ~= "Stunned" and state ~= "Dead" and Humanoid:GetAttribute(DashConfig.DashAttackAttribute) then
+    if state ~= "Stunned" and state ~= "Ragdolled" and state ~= "Dead" and Humanoid:GetAttribute(DashConfig.DashAttackAttribute) then
         return MovementRestrictions.States.Attacking
     end
-    if state ~= "Attacking" and state ~= "Stunned" and state ~= "Dead"
+    if state ~= "Attacking" and state ~= "Stunned" and state ~= "Ragdolled" and state ~= "Dead"
         and Humanoid:GetAttribute(DashConfig.PredictionAttribute) then
         return DashConfig.ActiveMovementRestriction
     end
@@ -768,6 +768,15 @@ local function UpdateCharacter(deltaTime: number)
 	end
 
     local restriction = GetMovementRestriction()
+    if Humanoid:GetAttribute(MovementRestrictions.StateAttribute) == "Ragdolled" then
+        IsSprinting = false
+        IsMoving = false
+        LastWPress = 0
+        CancelIdleVariations()
+        StopAllLocomotion(0.05)
+        UpdateMovementSpeed()
+        return
+    end
     local keepSprint = Humanoid:GetAttribute(DashConfig.PreserveSprintAttribute)
         and Humanoid:GetAttribute(DashConfig.PredictionAttribute)
         and Humanoid:GetAttribute(MovementRestrictions.StateAttribute) ~= "Attacking"

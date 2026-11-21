@@ -8,6 +8,7 @@ local Config = require(Shared.Config.DashConfig)
 local MovementConfig = require(Shared.Config.CombatStateConfig).Movement
 local Directions = require(Shared.Combat.DodgeDirections)
 local Motion = require(Shared.Combat.DashMotion)
+local LocalSFX = require(Shared.Combat.CombatSFXClient)
 local MovementSettings = require(Shared.Config.MovementAnimationConfig).Settings
 local player = Players.LocalPlayer
 local Request = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("Events"):WaitForChild("CombatStateRequest")
@@ -23,7 +24,7 @@ local function LocomotionVelocity(record)
     local direction = Vector3.new(move.X, 0, move.Z)
     if direction.Magnitude < 0.05 then return Vector3.new(0, 0, 0) end
     local state = humanoid:GetAttribute(MovementConfig.StateAttribute)
-    if state == "Attacking" or state == "Stunned" or state == "Dead" then
+    if state == "Attacking" or state == "Stunned" or state == "Ragdolled" or state == "Dead" then
         return Vector3.new(0, 0, 0)
     end
     local base = humanoid:GetAttribute(MovementConfig.BaseSpeedAttribute) or 16
@@ -32,7 +33,7 @@ local function LocomotionVelocity(record)
     return direction.Unit * speed
 end
 
-local function Stop(record, completed)
+local function Stop(record, completed, preserveVelocity)
     if active ~= record then return end
     active = nil
     record.StopVelocity = record.Root.AssemblyLinearVelocity
@@ -43,7 +44,9 @@ local function Stop(record, completed)
         record.Humanoid:SetAttribute(Config.PredictionAttribute, nil)
         record.Humanoid:SetAttribute(Config.PreserveSprintAttribute, nil)
     end
-    if record.Root.Parent and not record.Root.Anchored then
+    if record.Root.Parent and not record.Root.Anchored and not preserveVelocity
+        and not record.Humanoid.PlatformStand
+        and record.Humanoid:GetAttribute(MovementConfig.StateAttribute) ~= "Ragdolled" then
         local v = record.Root.AssemblyLinearVelocity
         local target = completed and LocomotionVelocity(record) or Vector3.new(0, 0, 0)
         record.Root.AssemblyLinearVelocity = Vector3.new(target.X, v.Y, target.Z)
@@ -78,6 +81,7 @@ local function Start(record, direction)
     humanoid:SetAttribute(Config.MotionFinishedAttribute, nil)
     active = record
     humanoid:SetAttribute(Config.PredictionAttribute, true)
+    LocalSFX:DashStarted(character, record.RequestId)
     return true
 end
 
@@ -104,11 +108,13 @@ function Controller.GetAttackRequestId()
     return nil
 end
 
-local function StopLunge(record, completed)
+local function StopLunge(record, completed, preserveVelocity)
     if lunge ~= record then return end
     lunge = nil
     if record.Humanoid.Parent then record.Humanoid:SetAttribute(Config.DashAttackAttribute, nil) end
-    if record.Root.Parent and not record.Root.Anchored then
+    if record.Root.Parent and not record.Root.Anchored and not preserveVelocity
+        and not record.Humanoid.PlatformStand
+        and record.Humanoid:GetAttribute(MovementConfig.StateAttribute) ~= "Ragdolled" then
         local target = Vector3.new(0, 0, 0)
         if completed then
             local move = record.Humanoid.MoveDirection
@@ -130,7 +136,7 @@ local function StartLunge(payload, momentum)
     local root = character and character:FindFirstChild("HumanoidRootPart")
     if not humanoid or humanoid.Health <= 0 or not root or root.Anchored then return end
     local state = humanoid:GetAttribute(MovementConfig.StateAttribute)
-    if state == "Stunned" or state == "Dead" then return end
+    if state == "Stunned" or state == "Ragdolled" or state == "Dead" then return end
     local elapsed = math.max(0, workspace:GetServerTimeNow() - payload.AttackAnimation.StartedAt)
     if elapsed >= momentum.Duration then return end
     local velocity = momentum.Velocity
@@ -162,6 +168,7 @@ function Controller.OnPayload(payload)
         pending = nil
         cooldowns[record.Profile.CooldownGroup] = os.clock() + math.max(0, reply.CooldownRemaining or 0)
         if not reply.Accepted then
+            LocalSFX:RejectDash(record.Character, record.RequestId)
             Stop(record)
             return
         end
@@ -181,16 +188,16 @@ function Controller.OnPayload(payload)
         return
     end
     if lunge and payload.State and (payload.State ~= "Attacking" or payload.AttackId ~= lunge.Id) then
-        StopLunge(lunge)
+        StopLunge(lunge, false, payload.State == "Ragdolled")
     end
     local record = active
     if not record then return end
     if payload.State == "Dodging" and payload.DodgeAnimation then
         record.ServerId = payload.DodgeAnimation.Id
         record.SeenDodge = true
-    elseif payload.State == "Stunned" or payload.State == "Dead" or payload.State == "Attacking"
+    elseif payload.State == "Stunned" or payload.State == "Ragdolled" or payload.State == "Dead" or payload.State == "Attacking"
         or (payload.State == "Idle" and record.SeenDodge) then
-        Stop(record, payload.State == "Idle")
+        Stop(record, payload.State == "Idle", payload.State == "Ragdolled")
     end
 end
 
@@ -200,6 +207,7 @@ end
 
 RunService.PreSimulation:Connect(function(deltaTime)
     if pending and os.clock() - pending.RequestedAt > Config.PredictionTimeout then
+        LocalSFX:RejectDash(pending.Character, pending.RequestId)
         Stop(pending)
         pending = nil
     end
@@ -208,7 +216,7 @@ RunService.PreSimulation:Connect(function(deltaTime)
         local root, humanoid = record.Root, record.Humanoid
         local state = humanoid:GetAttribute(MovementConfig.StateAttribute)
         if record.Character ~= player.Character or not root.Parent or root.Anchored or not humanoid.Parent
-            or humanoid.Health <= 0 or state == "Stunned" or state == "Dead" then
+            or humanoid.Health <= 0 or state == "Stunned" or state == "Ragdolled" or state == "Dead" then
             StopLunge(record)
         elseif record.Elapsed >= record.Duration then
             StopLunge(record, true)
@@ -232,7 +240,7 @@ RunService.PreSimulation:Connect(function(deltaTime)
     local root, humanoid = record.Root, record.Humanoid
     local state = humanoid:GetAttribute(MovementConfig.StateAttribute)
     if record.Character ~= player.Character or not root.Parent or root.Anchored
-        or not humanoid.Parent or humanoid.Health <= 0 or state == "Stunned" or state == "Dead"
+        or not humanoid.Parent or humanoid.Health <= 0 or state == "Stunned" or state == "Ragdolled" or state == "Dead"
         or (state == "Attacking" and record.Predicted) then
         Stop(record)
         return

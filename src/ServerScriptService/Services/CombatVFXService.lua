@@ -9,12 +9,28 @@ local WeaponRegistry = require(ReplicatedStorage.Shared.Weapons.WeaponRegistry)
 local CombatStateService = require(script.Parent.CombatStateService)
 local RemoteService = require(script.Parent.RemoteService)
 
+local Directions = require(ReplicatedStorage.Shared.Combat.DodgeDirections)
+
 local CombatVFXService = {}
 local initialized = false
 local Attributes = Config.Attributes
 
 local function GetRoot(character)
     return character and character:FindFirstChild("HumanoidRootPart")
+end
+
+local function Broadcast(character, payload)
+    local root = GetRoot(character)
+    if not root then return end
+    payload.Target = character
+    payload.ServerTime = workspace:GetServerTimeNow()
+    local event = RemoteService:GetEvent("CombatVFX")
+    for _, player in ipairs(Players:GetPlayers()) do
+        local observerRoot = GetRoot(player.Character)
+        if observerRoot and (observerRoot.Position - root.Position).Magnitude <= Config.BroadcastDistance then
+            event:FireClient(player, payload)
+        end
+    end
 end
 
 local function Publish(character)
@@ -57,36 +73,36 @@ function CombatVFXService:Init()
         return
     end
 
-    local event = RemoteService:GetEvent("CombatVFX")
-    CombatStateService:OnStateChanged(function(character)
+    CombatStateService:OnStateChanged(function(character, state, oldState)
         Publish(character)
+        if oldState == CombatStates.Dodging and state ~= CombatStates.Dodging then
+            Broadcast(character, { Kind = "CustomAction", Action = "StopDash" })
+        end
+        if state == CombatStates.Dodging then
+            local dodge = CombatStateService:GetDodgeAnimationState(character)
+            local root = GetRoot(character)
+            Broadcast(character, { Kind = "CustomAction", Action = "Dash",
+                Duration = dodge and (dodge.EndsAt - dodge.StartedAt) or 0.3,
+                Direction = dodge and root and Directions.ToWorld(root.CFrame, dodge.DirectionId) })
+        end
     end)
     CombatStateService:OnAttackPhaseChanged(function(character, _phase, attackId)
         if CombatStateService:GetAttackId(character) == attackId then
             Publish(character)
         end
     end)
-    CombatStateService:OnDamageApplied(function(character, outcome)
+    CombatStateService:OnDamageApplied(function(character, outcome, _sourcePosition, impact)
         if not Config.Reactions[outcome.Result] then
             return
         end
-        local root = GetRoot(character)
-        if not root then
-            return
+        local payload = { Result = outcome.Result }
+        if outcome.Result == CombatStates.DamageResults.Hit and outcome.Damage > 0 and impact then
+            payload.Attacker = impact.Attacker
+            payload.AttackId = impact.AttackId
+            payload.WeaponId = impact.WeaponId
+            payload.MoveId = impact.MoveId or "Light1" -- single NPC light attack
         end
-
-        local position = root.Position
-        local payload = {
-            Result = outcome.Result,
-            Target = character,
-            ServerTime = workspace:GetServerTimeNow(),
-        }
-        for _, player in ipairs(Players:GetPlayers()) do
-            local observerRoot = GetRoot(player.Character)
-            if observerRoot and (observerRoot.Position - position).Magnitude <= Config.BroadcastDistance then
-                event:FireClient(player, payload)
-            end
-        end
+        Broadcast(character, payload)
     end)
 end
 

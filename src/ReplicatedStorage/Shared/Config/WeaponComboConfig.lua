@@ -81,8 +81,9 @@ WeaponComboConfig.Weapons = {
                 Startup = 0.22,
                 Active = 0.12,
 
-                RecoveryOnHit = 0.36,
-                RecoveryOnMiss = 0.48,
+                RecoveryOnHit = 0.70,
+                RecoveryOnMiss = 0.85,
+                Finisher = { RagdollDuration = 1.20, KnockbackSpeed = 34, UpwardSpeed = 12 },
 
                 DamageMultiplier = 1.40,
                 HitStun = 0.50,
@@ -147,8 +148,9 @@ WeaponComboConfig.Weapons = {
                 Startup = 0.26,
                 Active = 0.14,
 
-                RecoveryOnHit = 0.42,
-                RecoveryOnMiss = 0.55,
+                RecoveryOnHit = 0.70,
+                RecoveryOnMiss = 0.85,
+                Finisher = { RagdollDuration = 1.20, KnockbackSpeed = 34, UpwardSpeed = 12 },
 
                 DamageMultiplier = 1.50,
                 HitStun = 0.55,
@@ -346,6 +348,15 @@ function WeaponComboConfig.Validate()
                 )
             )
 
+            if move.Finisher then
+                assert(move.Next == nil and move.Index == weapon.MaxChain,
+                    "Finisher must be the final combo move")
+                for _, key in ipairs({ "RagdollDuration", "KnockbackSpeed", "UpwardSpeed" }) do
+                    local n = move.Finisher[key]
+                    assert(IsFiniteNumber(n) and n > 0 and n <= (key == "RagdollDuration" and 3 or 80),
+                        "Invalid finisher " .. key)
+                end
+            end
             if move.ParryInterrupt then
                 assert(
                     move.Next ~= nil and weapon.Moves[move.Next] ~= nil,

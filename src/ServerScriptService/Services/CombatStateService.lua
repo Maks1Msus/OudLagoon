@@ -76,11 +76,12 @@ local NextPhase = {
 -- Blocking -> Dodging разрешён: уклонение сразу завершает блок, отпускать его не нужно.
 -- Dodging -> Blocking во время рывка и Blocking -> Attacking запрещены (сначала закончить блок).
 local AllowedTransitions = {
-    [State.Idle] = ToSet({ State.Attacking, State.Blocking, State.Dodging, State.Stunned, State.Dead }),
-    [State.Attacking] = ToSet({ State.Idle, State.Blocking, State.Dodging, State.Stunned, State.Dead }),
-    [State.Blocking] = ToSet({ State.Idle, State.Dodging, State.Stunned, State.Dead }),
-    [State.Dodging] = ToSet({ State.Idle, State.Stunned, State.Dead }),
-    [State.Stunned] = ToSet({ State.Idle, State.Dead }),
+    [State.Idle] = ToSet({ State.Attacking, State.Blocking, State.Dodging, State.Stunned, State.Ragdolled, State.Dead }),
+    [State.Attacking] = ToSet({ State.Idle, State.Blocking, State.Dodging, State.Stunned, State.Ragdolled, State.Dead }),
+    [State.Blocking] = ToSet({ State.Idle, State.Dodging, State.Stunned, State.Ragdolled, State.Dead }),
+    [State.Dodging] = ToSet({ State.Idle, State.Stunned, State.Ragdolled, State.Dead }),
+    [State.Stunned] = ToSet({ State.Idle, State.Ragdolled, State.Dead }),
+    [State.Ragdolled] = ToSet({ State.Idle, State.Dead }),
     [State.Dead] = ToSet({}),
 }
 
@@ -90,6 +91,7 @@ local SubRecordKey = {
     [State.Blocking] = "Block",
     [State.Dodging] = "Dodge",
     [State.Stunned] = "Stun",
+    [State.Ragdolled] = "Ragdoll",
 }
 
 -- ХРАНИЛИЩЕ -------------------------------------------------------------
@@ -295,7 +297,7 @@ end
 
 local DodgeDirections = require(ReplicatedStorage.Shared.Combat.DodgeDirections)
 
-function CombatStateService:StartDodge(character, directionId)
+function CombatStateService:StartDodge(character, directionId, requestId)
     directionId = directionId or "Forward"
     if not DodgeDirections.IsValidId(directionId) then return false, "InvalidDirection" end
     local humanoid = character and character:FindFirstChildOfClass("Humanoid")
@@ -303,7 +305,7 @@ function CombatStateService:StartDodge(character, directionId)
         return false, "CharacterUnavailable"
     end
     return self:Transition(character, State.Dodging, {
-        Data = { DirectionId = directionId },
+        Data = { DirectionId = directionId, RequestId = requestId },
     })
 end
 
@@ -347,6 +349,7 @@ function CombatStateService:GetDodgeAnimationState(character)
     if not dodge or record.State ~= State.Dodging or not record.StateEndsAt then return nil end
     return {
         Id = dodge.DodgeId, Revision = 1, DirectionId = dodge.DirectionId, Kind = dodge.Kind,
+        RequestId = dodge.RequestId,
         StartedAt = dodge.AnimationStartedAt,
         EndsAt = dodge.AnimationStartedAt + (record.StateEndsAt - record.StateStartedAt),
         IFrameEndsAt = dodge.AnimationStartedAt + (dodge.IFrameEndsAt - record.StateStartedAt),
@@ -454,7 +457,8 @@ local function Transition(self, character, newState, options, previousAttackId, 
         if not permitted then return false, why end
         dashProfile = DashConfig.GetProfile(directionId)
         options = table.clone(options or {})
-        options.Data = { DirectionId = directionId, Kind = DashConfig.GetKind(directionId) }
+        options.Data = { DirectionId = directionId, Kind = DashConfig.GetKind(directionId),
+            RequestId = options.Data and options.Data.RequestId }
         options.Duration = dashProfile.Duration
     end
 
@@ -662,6 +666,43 @@ end
 local function IsFiniteNumber(value)
     return type(value) == "number" and value == value and value ~= math.huge and value ~= -math.huge
 end
+-- A finisher may only knock down a live target registered by the current Active hit.
+-- The state owns the duration; RagdollService only applies/restores physical joints.
+function CombatStateService:GetRagdollData(character)
+    local record = Records[character]
+    return record and record.Ragdoll and table.clone(record.Ragdoll) or nil
+end
+
+function CombatStateService:ApplyComboRagdoll(character, attacker, attackId)
+    local source = Records[attacker]
+    local attack = source and source.Attack
+    if not self:IsAttackActive(attacker, attackId) or not attack.HitTargets[character] then
+        return false, "UnconfirmedHit"
+    end
+    local move = WeaponComboConfig.GetMove(attack.WeaponId, attack.MoveId)
+    local finisher = move and move.Finisher
+    if not finisher then return false, "NotFinisher" end
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    local root = character:FindFirstChild("HumanoidRootPart")
+    local sourceRoot = attacker:FindFirstChild("HumanoidRootPart")
+    if not character.Parent or not humanoid or humanoid.Health <= 0
+        or not root or root.Anchored or not sourceRoot then
+        return false, "CharacterUnavailable"
+    end
+    local delta = root.Position - sourceRoot.Position
+    local flat = Vector3.new(delta.X, 0, delta.Z)
+    if flat.Magnitude < 0.01 then
+        local look = sourceRoot.CFrame.LookVector
+        flat = Vector3.new(look.X, 0, look.Z)
+    end
+    if flat.Magnitude < 0.01 then flat = Vector3.new(0, 0, -1) end
+    return self:Transition(character, State.Ragdolled, {
+        Duration = finisher.RagdollDuration,
+        Data = { Velocity = flat.Unit * finisher.KnockbackSpeed
+            + Vector3.new(0, finisher.UpwardSpeed, 0) },
+    })
+end
+
 -- Оглушает персонажа на заданное время.
 -- Стан прерывает любое разрешённое текущее боевое состояние.
 -- Повторный стан не продлевает действующий и не обходит иммунитет.
@@ -869,6 +910,7 @@ local function StartAttack(self, character, timing, data, previousAttackId, dash
                 Recovery = timing.Recovery,
             },
             DashMomentum = data and data.DashMomentum,
+            WeaponId = data and data.WeaponId,
             MoveId = data and data.MoveId,
             ComboIndex = data and data.ComboIndex,
             CanBlockDuringRecovery = timing.CanBlockDuringRecovery == true,
@@ -1242,6 +1284,16 @@ function CombatStateService:ApplyDamage(character, damage, sourcePosition, attac
         end
     end
 
+    -- Snapshot the confirmed attack before damage/death listeners can clear its state.
+    -- Cosmetic metadata only; this does not change damage or hit detection.
+    local source = attacker and Records[attacker]
+    local attack = source and source.Attack
+    local impact
+    if source and source.State == State.Attacking and attack and attack.AttackId == attackId
+        and attack.Phase == Phase.Active and attack.HitTargets[character] then
+        impact = { Attacker = attacker, AttackId = attackId,
+            WeaponId = attack.WeaponId, MoveId = attack.MoveId }
+    end
     if applied > 0 then
         humanoid:TakeDamage(applied)
     end
@@ -1250,7 +1302,7 @@ function CombatStateService:ApplyDamage(character, damage, sourcePosition, attac
 
     local outcome = Outcome(result, applied)
 
-    DamageApplied.Fire(character, outcome, sourcePosition)
+    DamageApplied.Fire(character, outcome, sourcePosition, impact)
 
     return outcome
 end

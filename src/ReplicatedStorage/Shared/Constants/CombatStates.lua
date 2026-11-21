@@ -7,6 +7,7 @@ local CombatStates = {
     Blocking = "Blocking",
     Dodging = "Dodging",
     Stunned = "Stunned",
+    Ragdolled = "Ragdolled",
     Dead = "Dead",
 
     AttackPhases = {
