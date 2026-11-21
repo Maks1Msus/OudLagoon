@@ -29,6 +29,8 @@ local CombatStates = require(
 
 local WeaponComboConfig = require(ReplicatedStorage.Shared.Config.WeaponComboConfig)
 
+local DashConfig = require(ReplicatedStorage.Shared.Config.DashConfig)
+
 local CombatStateService = {}
 
 local State = CombatStates
@@ -120,7 +122,7 @@ local function NewRecord()
         ComboLock = nil,
         AttackRestrictions = setmetatable({}, { __mode = "k" }),
         -- Кулдауны переживают смену состояния
-        Cooldowns = { Dodge = 0 },
+        Cooldowns = { ForwardDash = 0, MobilityDash = 0, DashLight = 0 },
 
         TransitionId = transitionCounter,
     }
@@ -175,6 +177,7 @@ local RecoveryFinished = CreateSignal()
 local StateChanged = CreateSignal()
 local AttackPhaseChanged = CreateSignal()
 local DamageApplied = CreateSignal()
+local StunUpdated = CreateSignal()
 
 -- callback(character, outcome, sourcePosition): outcome - результат ApplyDamage
 -- ({ Result, Damage, Absorbed }). Вызывается для всех исходов, кроме Ignored.
@@ -185,6 +188,10 @@ function CombatStateService:OnDamageApplied(callback)
 end
 
 -- callback(character, newState, oldState, transitionId). Возвращает функцию отписки.
+function CombatStateService:OnStunUpdated(callback)
+    return StunUpdated.Connect(callback)
+end
+
 function CombatStateService:OnStateChanged(callback)
     return StateChanged.Connect(callback)
 end
@@ -274,10 +281,6 @@ local function CanEnter(record, newState, now)
         end
     end
 
-    if newState == State.Dodging and now < record.Cooldowns.Dodge then
-        return false, "Cooldown"
-    end
-
     return true
 end
 
@@ -290,8 +293,97 @@ function CombatStateService:CanBlock(character)
     return CanEnter(GetRecord(character), State.Blocking, os.clock())
 end
 
-function CombatStateService:CanDodge(character)
-    return CanEnter(GetRecord(character), State.Dodging, os.clock())
+local DodgeDirections = require(ReplicatedStorage.Shared.Combat.DodgeDirections)
+
+function CombatStateService:StartDodge(character, directionId)
+    directionId = directionId or "Forward"
+    if not DodgeDirections.IsValidId(directionId) then return false, "InvalidDirection" end
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    if not character or not character.Parent or not humanoid or humanoid.Health <= 0 then
+        return false, "CharacterUnavailable"
+    end
+    return self:Transition(character, State.Dodging, {
+        Data = { DirectionId = directionId },
+    })
+end
+
+function CombatStateService:GetDodgeId(character)
+    local record = Records[character]
+    return record and record.Dodge and record.Dodge.DodgeId or nil
+end
+
+function CombatStateService:GetDodgeElapsed(character, dodgeId)
+    local record = Records[character]
+    if not record or record.State ~= State.Dodging or not record.Dodge
+        or record.Dodge.DodgeId ~= dodgeId then return nil end
+    return math.max(0, os.clock() - record.StateStartedAt)
+end
+
+function CombatStateService:CanDashAttack(character, dodgeId)
+    local record = Records[character]
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    local elapsed = self:GetDodgeElapsed(character, dodgeId)
+    local conversion = DashConfig.Forward.AttackConversion
+    if not humanoid or humanoid.Health <= 0 or not character.Parent or elapsed == nil
+        or record.Dodge.DirectionId ~= "Forward" or not conversion.Enabled then
+        return false, "DashConversionUnavailable"
+    end
+    if elapsed + 0.000001 < conversion.WindowStart or elapsed - 0.000001 > conversion.WindowEnd then
+        return false, "DashConversionWindow"
+    end
+    if IsComboAttackRestricted(record) then return false, "ComboDefenseOnly" end
+    if os.clock() < record.Cooldowns.DashLight then return false, "DashLightCooldown" end
+    return true
+end
+
+function CombatStateService:GetDashLightCooldownRemaining(character)
+    local record = character and Records[character]
+    return record and math.max(0, record.Cooldowns.DashLight - os.clock()) or 0
+end
+
+function CombatStateService:GetDodgeAnimationState(character)
+    local record = Records[character]
+    local dodge = record and record.Dodge
+    if not dodge or record.State ~= State.Dodging or not record.StateEndsAt then return nil end
+    return {
+        Id = dodge.DodgeId, Revision = 1, DirectionId = dodge.DirectionId, Kind = dodge.Kind,
+        StartedAt = dodge.AnimationStartedAt,
+        EndsAt = dodge.AnimationStartedAt + (record.StateEndsAt - record.StateStartedAt),
+        IFrameEndsAt = dodge.AnimationStartedAt + (dodge.IFrameEndsAt - record.StateStartedAt),
+    }
+end
+
+function CombatStateService:IsDodgeInvulnerable(character)
+    local record = Records[character]
+    return record ~= nil and record.State == State.Dodging and record.Dodge ~= nil
+        and os.clock() < record.Dodge.IFrameEndsAt
+end
+
+function CombatStateService:CanDodge(character, directionId)
+    directionId = directionId or "Forward"
+    if not DodgeDirections.IsValidId(directionId) then return false, "InvalidDirection" end
+    local record = GetRecord(character)
+    local now = os.clock()
+    local allowed, reason = CanEnter(record, State.Dodging, now)
+    if not allowed then return false, reason end
+    local profile = DashConfig.GetProfile(directionId)
+    if now < record.Cooldowns[profile.CooldownGroup] then return false, "Cooldown" end
+    return true
+end
+
+-- Movement can end early, but only the state owner may complete the matching dash.
+function CombatStateService:EndDodge(character, dodgeId)
+    if self:GetDodgeId(character) ~= dodgeId or self:GetState(character) ~= State.Dodging then
+        return false, "StaleDodge"
+    end
+    return self:Transition(character, State.Idle)
+end
+
+function CombatStateService:GetDodgeCooldownRemaining(character, directionId)
+    if not character or not DodgeDirections.IsValidId(directionId) then return 0 end
+    local record = GetRecord(character)
+    local profile = DashConfig.GetProfile(directionId)
+    return math.max(0, record.Cooldowns[profile.CooldownGroup] - os.clock())
 end
 
 function CombatStateService:GetState(character)
@@ -347,13 +439,24 @@ local function ScheduleStateEnd(self, character, record, duration)
     end)
 end
 
-local function Transition(self, character, newState, options, previousAttackId, comboParry)
+local function Transition(self, character, newState, options, previousAttackId, comboParry, dashId)
     if not ValidStates[newState] then
         return false, "UnknownState"
     end
 
     local record = GetRecord(character)
     local now = os.clock()
+
+    local dashProfile
+    if newState == State.Dodging then
+        local directionId = options and options.Data and options.Data.DirectionId or "Forward"
+        local permitted, why = self:CanDodge(character, directionId)
+        if not permitted then return false, why end
+        dashProfile = DashConfig.GetProfile(directionId)
+        options = table.clone(options or {})
+        options.Data = { DirectionId = directionId, Kind = DashConfig.GetKind(directionId) }
+        options.Duration = dashProfile.Duration
+    end
 
     local allowed, reason
     if comboParry then
@@ -362,6 +465,9 @@ local function Transition(self, character, newState, options, previousAttackId, 
         allowed = newState == State.Blocking and canDefend
             and GetComboParryWindow(record, now) == comboParry
         reason = "ComboParryUnavailable"
+    elseif dashId then
+        allowed, reason = self:CanDashAttack(character, dashId)
+        allowed = allowed and newState == State.Attacking
     elseif previousAttackId then
         if IsComboAttackRestricted(record) then
             return false, "ComboDefenseOnly"
@@ -421,6 +527,15 @@ local function Transition(self, character, newState, options, previousAttackId, 
         elseif newState == State.Blocking then
             data.StartedAt = now
             data.ParryEndsAt = now + CombatStateConfig.Block.ParryWindow
+        elseif newState == State.Dodging then
+            data.DirectionId = data.DirectionId or "Forward"
+            data.AnimationStartedAt = workspace:GetServerTimeNow()
+            data.DodgeId = record.TransitionId
+            data.IFrameEndsAt = now + dashProfile.IFrameDuration
+        elseif newState == State.Stunned then
+            data.AnimationStartedAt = workspace:GetServerTimeNow()
+            data.ReactionStartedAt = data.AnimationStartedAt
+            data.Revision = 1
         end
 
         record[newKey] = data
@@ -445,7 +560,10 @@ local function Transition(self, character, newState, options, previousAttackId, 
 
     -- Кулдаун уклонения отсчитывается от его начала и не зависит от состояния
     if newState == State.Dodging then
-        record.Cooldowns.Dodge = now + CombatStateConfig.Dodge.Cooldown
+        record.Cooldowns[dashProfile.CooldownGroup] = now + dashProfile.Cooldown
+    end
+    if dashId and newState == State.Attacking then
+        record.Cooldowns.DashLight = now + DashConfig.Forward.AttackConversion.Cooldown
     end
 
     if options.Duration then
@@ -464,6 +582,22 @@ function CombatStateService:Transition(character, newState, options)
     return Transition(self, character, newState, options)
 end
 
+function CombatStateService:GetStunAnimationState(character)
+    local record = character and Records[character]
+    local stun = record and record.Stun
+    if not stun or record.State ~= State.Stunned or not record.StateEndsAt then
+        return nil
+    end
+
+    return {
+        Id = record.TransitionId,
+        Revision = stun.Revision or 1,
+        Source = stun.Source,
+        StartedAt = stun.ReactionStartedAt or workspace:GetServerTimeNow(),
+        EndsAt = workspace:GetServerTimeNow() + (record.StateEndsAt - os.clock()),
+    }
+end
+
 function CombatStateService:GetAttackAnimationState(character)
     local record = character and Records[character]
     local attack = record and record.Attack
@@ -477,6 +611,8 @@ function CombatStateService:GetAttackAnimationState(character)
         StartedAt = attack.AnimationPhaseStartedAt,
         Duration = attack.AnimationPhaseDuration,
         Timing = attack.AnimationTiming and table.clone(attack.AnimationTiming),
+        DashMomentum = attack.Phase == Phase.Startup and attack.DashMomentum
+            and table.clone(attack.DashMomentum) or nil,
     }
 end
 
@@ -682,21 +818,16 @@ function CombatStateService:ApplyComboHitStun(character, duration, attacker, att
     if record.State == State.Stunned then
         record.StateEndsAt = math.min(math.max(record.StateEndsAt or now, endsAt), lock.EndsAt)
         stun.Duration = record.StateEndsAt - record.StateStartedAt
+        stun.Revision = (stun.Revision or 1) + 1
+        stun.ReactionStartedAt = workspace:GetServerTimeNow()
         ScheduleStateEnd(self, character, record, record.StateEndsAt - now)
+        StunUpdated.Fire(character)
         return true, "Refreshed"
     end
 
     if duration == 0 then
         return false, "NoHitStun"
     end
-    if record.State == State.Stunned then
-        endsAt = math.min(math.max(record.StateEndsAt or now, endsAt), lock.EndsAt)
-        record.StateEndsAt = endsAt
-        stun.Duration = endsAt - record.StateStartedAt
-        ScheduleStateEnd(self, character, record, endsAt - now)
-        return true, "Refreshed"
-    end
-
     return self:Transition(character, State.Stunned, {
         Duration = endsAt - now,
         Data = {
@@ -723,7 +854,7 @@ end
 -- поэтому любое прерывание (оглушение, смерть, уклонение из Recovery) обрывает цепочку,
 -- а устаревшие шаги ничего не меняют и не наносят урона.
 -- Возвращает true, <AttackId> либо false, <причина>.
-local function StartAttack(self, character, timing, data, previousAttackId)
+local function StartAttack(self, character, timing, data, previousAttackId, dashId)
     if not IsValidTiming(timing) then
         return false, "InvalidTiming"
     end
@@ -737,12 +868,13 @@ local function StartAttack(self, character, timing, data, previousAttackId)
                 Active = timing.Active,
                 Recovery = timing.Recovery,
             },
+            DashMomentum = data and data.DashMomentum,
             MoveId = data and data.MoveId,
             ComboIndex = data and data.ComboIndex,
             CanBlockDuringRecovery = timing.CanBlockDuringRecovery == true,
             CanDodgeDuringRecovery = timing.CanDodgeDuringRecovery == true,
         },
-    }, previousAttackId)
+    }, previousAttackId, nil, dashId)
 
     if not ok then
         return false, transitionId
@@ -796,6 +928,15 @@ end
 -- true, пока атака attackId идёт и находится в фазе Active (окно регистрации попаданий).
 function CombatStateService:StartAttack(character, timing, data)
     return StartAttack(self, character, timing, data)
+end
+
+function CombatStateService:StartDashAttack(character, timing, data, dodgeId)
+    if type(dodgeId) ~= "number" or not data or data.MoveId ~= "DashLight" then
+        return false, "InvalidDashAttack"
+    end
+    local allowed, reason = self:CanDashAttack(character, dodgeId)
+    if not allowed then return false, reason end
+    return StartAttack(self, character, timing, data, nil, dodgeId)
 end
 
 function CombatStateService:StartComboAttack(character, timing, data, previousAttackId)
@@ -1079,6 +1220,10 @@ function CombatStateService:ApplyDamage(character, damage, sourcePosition, attac
         return Outcome(DamageResult.Ignored, 0)
     end
 
+    if self:IsDodgeInvulnerable(character) then
+        return Outcome(DamageResult.Ignored, 0)
+    end
+
     local result = DamageResult.Hit
     local applied = damage
 
@@ -1132,6 +1277,7 @@ end
 
 -- Ошибки конфигурации должны проявляться при запуске, а не посреди боя.
 local function ValidateConfig()
+    DashConfig.Validate()
     local block = CombatStateConfig.Block
 
     assert(

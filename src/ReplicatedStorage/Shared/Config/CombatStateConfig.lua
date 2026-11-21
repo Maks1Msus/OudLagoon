@@ -4,6 +4,16 @@
 
 local CombatStateConfig = {}
 
+CombatStateConfig.Movement = {
+    BaseSpeedAttribute = "CombatBaseWalkSpeed",
+    StateAttribute = "CombatMovementState",
+    States = {
+        Attacking = { WalkSpeedMultiplier = 0.5, CanSprint = false, CanJump = false },
+        Blocking = { WalkSpeedMultiplier = 0.4, CanSprint = false, CanJump = false },
+        Dodging = { WalkSpeedMultiplier = 1, CanSprint = true, CanJump = false, LockRotation = false },
+    },
+}
+
 CombatStateConfig.Block = {
     DamageReduction = 0.70, -- доля поглощаемого урона при обычном блоке
     ParryWindow = 0.25,     -- сколько после начала блока действует окно парирования
@@ -22,12 +32,8 @@ CombatStateConfig.Stun = {
     PostStunImmunity = 0.30,
 }
 
-CombatStateConfig.Dodge = {
-    Duration = 0.35,        -- длительность рывка
-    IFrameDuration = 0.20,  -- неуязвимость: только начало рывка
-    Distance = 8,
-    Cooldown = 1.0,         -- отсчитывается от начала уклонения
-}
+-- Dash timing, distances and cooldowns are configured in DashConfig.lua.
+
 
 
 return CombatStateConfig

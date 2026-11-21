@@ -15,6 +15,11 @@ local Config = require(
 		:WaitForChild("MovementAnimationConfig")
 )
 
+local CombatStateConfig = require(
+    ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config"):WaitForChild("CombatStateConfig")
+)
+local MovementRestrictions = CombatStateConfig.Movement
+local DashConfig = require(ReplicatedStorage.Shared.Config.DashConfig)
 local Settings = Config.Settings
 
 --------------------------------------------------
@@ -43,6 +48,7 @@ local LastFallVelocity = 0
 
 local BaseWalkSpeed = 16
 local ExpectedWalkSpeed: number? = nil
+local SavedJumpEnabled: boolean? = nil
 
 local CharacterConnections = {}
 local GlobalConnections = {}
@@ -533,7 +539,35 @@ end
 -- SPRINT INPUT
 --------------------------------------------------
 
+local function GetMovementRestriction()
+    if not Humanoid then
+        return nil
+    end
+    local state = Humanoid:GetAttribute(MovementRestrictions.StateAttribute)
+    if state ~= "Stunned" and state ~= "Dead" and Humanoid:GetAttribute(DashConfig.DashAttackAttribute) then
+        return MovementRestrictions.States.Attacking
+    end
+    if state ~= "Attacking" and state ~= "Stunned" and state ~= "Dead"
+        and Humanoid:GetAttribute(DashConfig.PredictionAttribute) then
+        return DashConfig.ActiveMovementRestriction
+    end
+    return MovementRestrictions.States[state]
+end
+
+local function RestoreJump()
+    if Humanoid and SavedJumpEnabled ~= nil then
+        Humanoid:SetStateEnabled(Enum.HumanoidStateType.Jumping, SavedJumpEnabled)
+    end
+    SavedJumpEnabled = nil
+end
+
 local function HandleWPressed()
+    local restriction = GetMovementRestriction()
+    if restriction and not restriction.CanSprint then
+        IsSprinting = false
+        LastWPress = 0
+        return
+    end
 	local now = os.clock()
 
 	if now - LastWPress <= Settings.SprintDoubleTapWindow then
@@ -563,33 +597,43 @@ end
 --------------------------------------------------
 
 local function UpdateMovementSpeed()
-	if not Humanoid then
-		return
-	end
+    if not Humanoid then
+        return
+    end
 
-	local multiplier = IsSprinting
-		and Settings.SprintSpeedMultiplier
-		or 1
+    local restriction = GetMovementRestriction()
+    local sprintMultiplier = IsSprinting and (not restriction or restriction.CanSprint)
+        and Settings.SprintSpeedMultiplier or 1
+    local combatMultiplier = restriction and restriction.WalkSpeedMultiplier or 1
+    local base = Humanoid:GetAttribute(MovementRestrictions.BaseSpeedAttribute)
 
-	-- Detect changes made by other systems.
-	if ExpectedWalkSpeed
-		and math.abs(Humanoid.WalkSpeed - ExpectedWalkSpeed) > 0.05 then
+    if type(base) == "number" then
+        BaseWalkSpeed = base
+    elseif not restriction and ExpectedWalkSpeed
+        and math.abs(Humanoid.WalkSpeed - ExpectedWalkSpeed) > 0.05
+    then
+        BaseWalkSpeed = Humanoid.WalkSpeed / sprintMultiplier
+    end
 
-		if IsSprinting then
-			BaseWalkSpeed =
-				Humanoid.WalkSpeed / Settings.SprintSpeedMultiplier
-		else
-			BaseWalkSpeed = Humanoid.WalkSpeed
-		end
-	end
+    -- Publish the unrestricted locomotion intent for the dash-to-movement blend.
+    Humanoid:SetAttribute(DashConfig.SprintIntentAttribute, IsSprinting)
+    Humanoid:SetAttribute(DashConfig.LocomotionSpeedAttribute,
+        BaseWalkSpeed * (IsSprinting and Settings.SprintSpeedMultiplier or 1))
+    local targetSpeed = BaseWalkSpeed * combatMultiplier * sprintMultiplier
+    if math.abs(Humanoid.WalkSpeed - targetSpeed) > 0.05 then
+        Humanoid.WalkSpeed = targetSpeed
+    end
+    ExpectedWalkSpeed = targetSpeed
 
-	local targetSpeed = BaseWalkSpeed * multiplier
-
-	if math.abs(Humanoid.WalkSpeed - targetSpeed) > 0.05 then
-		Humanoid.WalkSpeed = targetSpeed
-	end
-
-	ExpectedWalkSpeed = targetSpeed
+    if restriction and not restriction.CanJump then
+        if SavedJumpEnabled == nil then
+            SavedJumpEnabled = Humanoid:GetStateEnabled(Enum.HumanoidStateType.Jumping)
+        end
+        Humanoid:SetStateEnabled(Enum.HumanoidStateType.Jumping, false)
+        Humanoid.Jump = false
+    else
+        RestoreJump()
+    end
 end
 
 --------------------------------------------------
@@ -603,6 +647,11 @@ local function UpdateCharacterRotation(
 	if not Humanoid or not RootPart then
 		return
 	end
+
+    local restriction = GetMovementRestriction()
+    if restriction and restriction.LockRotation then
+        return
+    end
 
 	local targetDirection: Vector3? = nil
 	local responsiveness = Settings.WalkTurnResponsiveness
@@ -718,6 +767,19 @@ local function UpdateCharacter(deltaTime: number)
 		return
 	end
 
+    local restriction = GetMovementRestriction()
+    local keepSprint = Humanoid:GetAttribute(DashConfig.PreserveSprintAttribute)
+        and Humanoid:GetAttribute(DashConfig.PredictionAttribute)
+        and Humanoid:GetAttribute(MovementRestrictions.StateAttribute) ~= "Attacking"
+        and Humanoid:GetAttribute(MovementRestrictions.StateAttribute) ~= "Stunned"
+        and Humanoid:GetAttribute(MovementRestrictions.StateAttribute) ~= "Dead"
+    local state = Humanoid:GetAttribute(MovementRestrictions.StateAttribute)
+    if state == "Stunned" or state == "Dead"
+        or (restriction and not restriction.CanSprint and not keepSprint) then
+        IsSprinting = false
+        LastWPress = 0
+    end
+
 	local moveDirection = Humanoid.MoveDirection
 	local moving = moveDirection.Magnitude > 0.05
 
@@ -747,6 +809,9 @@ local function UpdateCharacter(deltaTime: number)
 		UpdateLocomotion("Idle", Vector3.zero)
 
 		ScheduleIdleVariation()
+        if CurrentShiftLock then
+            UpdateCharacterRotation(moveDirection, deltaTime)
+        end
 
 		return
 	end
@@ -796,6 +861,7 @@ local function DisconnectCharacterConnections()
 end
 
 local function ResetCharacterState()
+    RestoreJump()
 	StopAllLocomotion(0)
 
 	for _, track in pairs(Tracks) do
@@ -866,7 +932,7 @@ local function SetupCharacter(character: Model)
 	BaseWalkSpeed = Humanoid.WalkSpeed
 
 	-- Rotation is handled by this controller.
-	Humanoid.AutoRotate = false
+	Humanoid.AutoRotate = true
 
 	DisableDefaultAnimate()
 	LoadAnimations()

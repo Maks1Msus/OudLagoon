@@ -35,6 +35,13 @@ WeaponComboConfig.Weapons = {
         ResetAfter = 1.10,
 
         Moves = {
+            DashLight = {
+                Index = 1, AlternativeStart = true, Next = "Light2",
+                Startup = 0.10, Active = 0.12,
+                RecoveryOnHit = 0.20, RecoveryOnMiss = 0.40,
+                DamageMultiplier = 0.85, HitStun = 0.32,
+                ParryInterrupt = false,
+            },
             Light1 = {
                 Index = 1,
                 Next = "Light2",
@@ -91,6 +98,13 @@ WeaponComboConfig.Weapons = {
         ResetAfter = 1.20,
 
         Moves = {
+            DashLight = {
+                Index = 1, AlternativeStart = true, Next = "Light2",
+                Startup = 0.10, Active = 0.12,
+                RecoveryOnHit = 0.20, RecoveryOnMiss = 0.40,
+                DamageMultiplier = 0.85, HitStun = 0.32,
+                ParryInterrupt = false,
+            },
             Light1 = {
                 Index = 1,
                 Next = "Light2",
@@ -245,8 +259,13 @@ function WeaponComboConfig.Validate()
                 )
             )
 
+            if move.AlternativeStart then
+                assert(move.Index == 1 and moveId ~= weapon.StartMove and move.Next
+                    and weapon.Moves[move.Next] and weapon.Moves[move.Next].Index == 2,
+                    "Invalid alternate combo start: " .. weaponId .. "." .. moveId)
+            end
             assert(
-                not indexes[move.Index],
+                move.AlternativeStart or not indexes[move.Index],
                 string.format(
                     "[WeaponComboConfig] %s has duplicate combo index %d",
                     weaponId,
@@ -254,7 +273,7 @@ function WeaponComboConfig.Validate()
                 )
             )
 
-            indexes[move.Index] = true
+            if not move.AlternativeStart then indexes[move.Index] = true end
 
             if move.Next ~= nil then
                 assert(

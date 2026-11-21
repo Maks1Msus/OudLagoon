@@ -19,6 +19,9 @@ local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
 
 local player = Players.LocalPlayer
+local DodgeDirections = require(ReplicatedStorage:WaitForChild("Shared")
+    :WaitForChild("Combat"):WaitForChild("DodgeDirections"))
+local DashMovement = require(script.Parent:WaitForChild("DashMovementController"))
 
 local CombatStates = require(
     ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Constants"):WaitForChild("CombatStates")
@@ -33,6 +36,7 @@ local CombatStateChanged = Events:WaitForChild("CombatStateChanged")
 -- Минимальный интервал между запросами атаки.
 local ATTACK_REQUEST_INTERVAL = 0.08
 local nextAttackRequestAt = 0
+local nextDodgeRequestAt = 0
 
 -- Как часто повторяется BlockStart, пока блок удерживается, но сервер его ещё не принял
 -- (например, идёт собственная атака). Лимит сервера - 20 запросов в секунду.
@@ -41,7 +45,6 @@ local BLOCK_RETRY_INTERVAL = 0.1
 -- В этих состояниях атаку отправлять бессмысленно: сервер её отклонит
 local CANNOT_ATTACK_STATES = {
     [CombatStates.Blocking] = true,
-    [CombatStates.Dodging] = true,
     [CombatStates.Stunned] = true,
     [CombatStates.Dead] = true,
 }
@@ -84,7 +87,34 @@ local function tryAttack()
 
     nextAttackRequestAt = now + ATTACK_REQUEST_INTERVAL
 
+    if DashMovement.IsMoving() or combatState == CombatStates.Dodging then
+        local requestId = DashMovement.GetAttackRequestId()
+        if requestId then CombatStateRequest:FireServer("DashAttack", requestId) end
+        return
+    end
     CombatRequest:FireServer("Attack")
+end
+
+-- Movement direction is quantized locally; the server resolves and limits world motion.
+local function getDashDirectionId(steering)
+    local humanoid = getHumanoid()
+    local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+    if not humanoid or humanoid.Health <= 0 or not root then return nil end
+    if steering and humanoid.MoveDirection.Magnitude < 0.05 then return nil end
+    return DodgeDirections.FromLocalVector(root.CFrame:VectorToObjectSpace(humanoid.MoveDirection))
+end
+
+local function tryDodge()
+    local now = os.clock()
+    local directionId = getDashDirectionId()
+    if not directionId or now < nextDodgeRequestAt then return end
+    if combatState == CombatStates.Stunned or combatState == CombatStates.Dead
+        or combatState == CombatStates.Dodging then return end
+    local requestId = DashMovement.Request(directionId,
+        combatState == CombatStates.Idle or combatState == CombatStates.Blocking)
+    if not requestId then return end
+    nextDodgeRequestAt = now + 0.1
+    CombatStateRequest:FireServer("Dodge", directionId, requestId)
 end
 
 -- БЛОК ------------------------------------------------------------------
@@ -102,7 +132,8 @@ local function requestBlock()
         return
     end
 
-    if combatState == CombatStates.Blocking or combatState == CombatStates.Dead then
+    if combatState == CombatStates.Blocking or combatState == CombatStates.Dead
+        or combatState == CombatStates.Dodging then
         return
     end
 
@@ -136,6 +167,8 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 
     if input.UserInputType == Enum.UserInputType.MouseButton1 then
         tryAttack()
+    elseif input.KeyCode == Enum.KeyCode.Q then
+        tryDodge()
     elseif isBlockInput(input) then
         blockHeld = true
         nextBlockRequestAt = 0
@@ -167,6 +200,7 @@ end)
 -- СОСТОЯНИЕ ОТ СЕРВЕРА --------------------------------------------------
 
 CombatStateChanged.OnClientEvent:Connect(function(payload)
+    DashMovement.OnPayload(payload)
     if type(payload) == "table" and type(payload.State) == "string" then
         combatState = payload.State
     end
@@ -176,6 +210,7 @@ end)
 player.CharacterAdded:Connect(function()
     combatState = CombatStates.Idle
     nextAttackRequestAt = 0
+    nextDodgeRequestAt = 0
     nextBlockRequestAt = 0
 
     CombatStateRequest:FireServer("Sync")

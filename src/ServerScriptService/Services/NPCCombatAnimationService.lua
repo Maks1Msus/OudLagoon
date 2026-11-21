@@ -1,24 +1,5 @@
--- Боевые анимации NPC (тренировочных манекенов). Работает на сервере: Animator NPC принадлежит
--- серверу, поэтому анимации видят все игроки. Использует те же ID и настройки, что и клиентская
--- система игроков (CombatAnimationConfig), и те же боевые состояния (CombatStateService).
---
--- Сервис только показывает состояние: урон, блок и парирование решает CombatStateService.
---
--- Сейчас подключены блок и реакции (этап 2):
---   Blocking                 -> BlockStart, затем BlockLoop
---   Parried (удар парирован) -> Parry, затем возврат в BlockLoop
---   Blocked (удар в блок)    -> BlockHit, затем возврат в BlockLoop
---   Hit (полный урон)        -> Hit1 / Hit2 / Hit3: случайный вариант без повтора подряд
---                               (у каждого NPC своя память)
---   Stunned (переход)        -> только останавливает позу блока/атаки; анимацию Stunned
---                               состояние само НЕ запускает
---   PlayReaction(model, "Parried" | "Stunned") -> явные реакции (CombatService): удар NPC
---                               парировали / NPC оглушила способность
---   Idle / Dead              -> анимация останавливается
---   Attacking (новый удар)   -> MoveId, Light1 for a single NPC attack, then Attack fallback
---
--- Логика повторяет CombatAnimationController (клиент игроков). Если правила переходов
--- изменятся, менять нужно оба места; позже её можно вынести в общий модуль.
+-- NPC reactions follow authoritative stun source, revision and expiry.
+-- Attack and defense tracks use the same shared animation configuration.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
@@ -28,6 +9,7 @@ local CombatStates = require(ReplicatedStorage.Shared.Constants.CombatStates)
 
 local CombatStateService = require(script.Parent.CombatStateService)
 local AttackAnimationSync = require(ReplicatedStorage.Shared.Combat.AttackAnimationSync)
+local CombatReactionSync = require(ReplicatedStorage.Shared.Combat.CombatReactionSync)
 
 local NPCCombatAnimationService = {}
 
@@ -42,16 +24,6 @@ local BLOCK_SLOTS = {
     BlockLoop = true,
     BlockHit = true,
     Parry = true,
-}
-
--- Реакции, которые смена состояния на Stunned не должна обрывать: удар сначала запускает Hit1..3
--- (OnDamageApplied), и лишь затем сервер оглушает цель.
-local KEEP_ON_STUN = {
-    Hit1 = true,
-    Hit2 = true,
-    Hit3 = true,
-    Parried = true,
-    Stunned = true,
 }
 
 local Entries = {} -- [model] = entry
@@ -122,6 +94,7 @@ local function StopActive(entry, fadeTime)
 
     if track then
         AttackAnimationSync.Stop(track)
+        CombatReactionSync.Stop(track)
         track:Stop(fadeTime or Settings.FadeOutTime)
     end
 end
@@ -238,6 +211,33 @@ end
 
 -- СОБЫТИЯ БОЯ ------------------------------------------------------------
 
+local function ApplyStunReaction(entry)
+    local snapshot = CombatStateService:GetStunAnimationState(entry.Model)
+    if not snapshot or snapshot.EndsAt <= workspace:GetServerTimeNow() then
+        return
+    end
+
+    if entry.StunId ~= snapshot.Id or entry.StunRevision ~= snapshot.Revision then
+        entry.StunId = snapshot.Id
+        entry.StunRevision = snapshot.Revision
+        local slot = CombatAnimationConfig.GetStunSlot(
+            snapshot.Source, CombatConfig.UnarmedId, entry.LastHitSlot
+        )
+        if snapshot.Source == "Hit" and slot then
+            entry.LastHitSlot = slot
+        end
+        if not slot then
+            StopActive(entry)
+            return
+        end
+        PlaySlot(entry, slot)
+    end
+
+    if entry.ActiveTrack and CombatAnimationConfig.IsStunSlot(entry.ActiveSlot) then
+        CombatReactionSync.Update(entry.ActiveTrack, snapshot)
+    end
+end
+
 local function OnStateChanged(character, newState, oldState)
     local entry = Entries[character]
 
@@ -273,10 +273,7 @@ local function OnStateChanged(character, newState, oldState)
     elseif newState == CombatStates.Idle or newState == CombatStates.Dead then
         StopActive(entry)
     elseif newState == CombatStates.Stunned then
-        -- Анимацию Stunned не запускаем: только убираем позу блока/атаки
-        if not (entry.ActiveSlot and KEEP_ON_STUN[entry.ActiveSlot]) then
-            StopActive(entry)
-        end
+        ApplyStunReaction(entry)
     end
 end
 
@@ -302,16 +299,7 @@ local function OnDamageApplied(character, outcome)
         if state == CombatStates.Blocking then
             PlayReaction(entry, "BlockHit", backToBlock)
         end
-    elseif result == DamageResults.Hit then
-        if CombatAnimationConfig.ShouldPlayHit(state) then
-            -- Свой вариант на каждый NPC: не повторяем предыдущий
-            local slot = CombatAnimationConfig.PickHitSlot(CombatConfig.UnarmedId, entry.LastHitSlot)
 
-            if slot then
-                entry.LastHitSlot = slot
-                PlayReaction(entry, slot, backToBlock)
-            end
-        end
     end
 end
 
@@ -391,7 +379,14 @@ function NPCCombatAnimationService:PlayReaction(model, slot)
         return false
     end
 
-    PlayReaction(entry, slot)
+    if slot == "Parried" or slot == "Stunned" then
+        if CombatStateService:GetState(model) ~= CombatStates.Stunned then
+            return false
+        end
+        ApplyStunReaction(entry)
+    else
+        PlayReaction(entry, slot)
+    end
 
     return true
 end
@@ -407,6 +402,12 @@ function NPCCombatAnimationService:Init()
     CombatAnimationConfig.WarnIfInvalid("server")
 
     CombatStateService:OnStateChanged(OnStateChanged)
+    CombatStateService:OnStunUpdated(function(character)
+        local entry = Entries[character]
+        if entry then
+            ApplyStunReaction(entry)
+        end
+    end)
     CombatStateService:OnAttackPhaseChanged(function(character, _phase, attackId)
         local entry = Entries[character]
         if entry and entry.ActiveTrack and entry.AnimatedAttackId == attackId

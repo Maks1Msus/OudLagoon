@@ -20,13 +20,10 @@
 -- РЕАКЦИИ (накладываются поверх текущей позы и не меняют состояние):
 --   Parry    - успешное парирование; прерывает блок, затем снова включается BlockLoop;
 --   BlockHit - короткая реакция на удар, принятый в блок;
---   Hit1..3  - получение полного урона; вариант выбирается случайно, без повтора подряд
---              (PickHitSlot), берутся только назначенные;
---   Parried  - реакция АТАКУЮЩЕГО, чей удар парировали (клиент игрока и NPC);
---   Stunned  - оглушение СПОСОБНОСТЬЮ. Играет только по явному событию (CombatFeedback,
---              Kind = "Reaction", Reaction = "Stunned" / PlayReaction у NPC), а не при
---              любом переходе в состояние Stunned: оглушение от удара и парирования
---              показывается реакциями Hit1..3 и Parried.
+--   Hit1..3 - actual HitStun; selected again on a confirmed stun refresh.
+--   Parried - attacker stunned by a successful parry.
+--   Stunned - ability or generic stun, looped until the server deadline.
+-- Reaction playback follows Stunned state metadata for both players and NPCs.
 --
 -- Приоритеты: блок (Action) < Attack (Action2) < BlockHit и Hit1..3 (Action3) <
 -- Parry, Parried, Stunned (Action4). Parry выше BlockHit, чтобы реакция на предыдущий
@@ -35,6 +32,7 @@
 local CombatConfig = require(script.Parent.CombatConfig)
 local CombatStates = require(script.Parent.Parent.Constants.CombatStates)
 
+local DodgeDirections = require(script.Parent.Parent.Combat.DodgeDirections)
 local CombatAnimationConfig = {}
 
 -- Слоты реакции на полный урон (из них PickHitSlot выбирает случайный).
@@ -50,6 +48,7 @@ CombatAnimationConfig.Slots = {
     Light1 = attackSettings,
     Light2 = attackSettings,
     Light3 = attackSettings,
+    DashLight = attackSettings,
 
     BlockStart = { Priority = Enum.AnimationPriority.Action, Looped = false },
     BlockLoop = { Priority = Enum.AnimationPriority.Action, Looped = true },
@@ -66,6 +65,14 @@ CombatAnimationConfig.Slots = {
 
     Stunned = { Priority = Enum.AnimationPriority.Action4, Looped = true },
     Dodge = { Priority = Enum.AnimationPriority.Action3, Looped = false },
+    DashForward = { Priority = Enum.AnimationPriority.Action3, Looped = false },
+    DashBackward = { Priority = Enum.AnimationPriority.Action3, Looped = false },
+    DashLeft = { Priority = Enum.AnimationPriority.Action3, Looped = false },
+    DashRight = { Priority = Enum.AnimationPriority.Action3, Looped = false },
+    DodgeForward = { Priority = Enum.AnimationPriority.Action3, Looped = false },
+    DodgeBackward = { Priority = Enum.AnimationPriority.Action3, Looped = false },
+    DodgeLeft = { Priority = Enum.AnimationPriority.Action3, Looped = false },
+    DodgeRight = { Priority = Enum.AnimationPriority.Action3, Looped = false },
     UnarmedIdle = {
         Priority = Enum.AnimationPriority.Action,
         Looped = true,
@@ -76,6 +83,7 @@ CombatAnimationConfig.Slots = {
 -- иначе берётся Common.
 CombatAnimationConfig.Weapons = {
     Unarmed = {
+        DashLight = "rbxassetid://0", -- replace with a dedicated DashLight animation
         Light1 = "rbxassetid://82567611460490",
         Light2 = "rbxassetid://80589512439773",
         Light3 = "rbxassetid://88850007621218",
@@ -83,6 +91,7 @@ CombatAnimationConfig.Weapons = {
     },
 
     Sword = {
+        DashLight = "rbxassetid://0", -- replace with a dedicated DashLight animation
         Light1 = "rbxassetid://135807577051754",
         Light2 = "rbxassetid://108880380825509",
         Light3 = "rbxassetid://102214543831853",
@@ -91,17 +100,25 @@ CombatAnimationConfig.Weapons = {
 
 -- Общие анимации, не зависящие от оружия.
 CombatAnimationConfig.Common = {
-    BlockStart = "rbxassetid://131629216364126",
+    BlockStart = "rbxassetid://78504736522611",
     BlockLoop = "rbxassetid://101054029069813",
     BlockHit = "rbxassetid://0",
-    Parry = "rbxassetid://111581143949849",
-    Hit1 = "rbxassetid://96097949360272",
-    Hit2 = "rbxassetid://129430604398091",
-    Hit3 = "rbxassetid://111577929725231",
+    Parry = "rbxassetid://85973050461853",
+    Hit1 = "rbxassetid://111879400919431",
+    Hit2 = "rbxassetid://132558804486644",
+    
 
-    Parried = "rbxassetid://127150676382449",
+    Parried = "rbxassetid://114102162645423",
     Stunned = "rbxassetid://86159934712814",
-    Dodge = "rbxassetid://0",
+    Dodge = "rbxassetid://0", -- optional fallback for all directions
+    DashForward = "rbxassetid://102791967030409",
+    DashBackward = "rbxassetid://119128064291280",
+    DashLeft = "rbxassetid://77194732364149",
+    DashRight = "rbxassetid://123538443585620",
+    DodgeForward = "rbxassetid://102791967030409",
+    DodgeBackward = "rbxassetid://119128064291280",
+    DodgeLeft = "rbxassetid://77194732364149",
+    DodgeRight = "rbxassetid://123538443585620",
 }
 
 CombatAnimationConfig.Settings = {
@@ -140,6 +157,20 @@ function CombatAnimationConfig.IsAssigned(animationId)
     return animationId:match("^rbxassetid://0*$") == nil
 end
 
+function CombatAnimationConfig.IsDodgeSlot(slot)
+    return slot == "DashForward" or slot == "DashBackward" or slot == "DashLeft" or slot == "DashRight"
+        or slot == "Dodge" or slot == "DodgeForward" or slot == "DodgeBackward"
+        or slot == "DodgeLeft" or slot == "DodgeRight"
+end
+
+function CombatAnimationConfig.GetDodgeSlot(directionId, weaponId)
+    local slot = DodgeDirections.AnimationSlot(directionId)
+    local dashSlot = slot:gsub("^Dodge", "Dash")
+    if CombatAnimationConfig.GetAnimationId(dashSlot, weaponId) then return dashSlot end
+    if CombatAnimationConfig.GetAnimationId(slot, weaponId) then return slot end
+    return CombatAnimationConfig.GetAnimationId("Dodge", weaponId) and "Dodge" or nil
+end
+
 function CombatAnimationConfig.IsAttackSlot(slot)
     return CombatAnimationConfig.Slots[slot] == attackSettings
 end
@@ -156,7 +187,9 @@ function CombatAnimationConfig.GetAnimationId(slot, weaponId)
     if CombatAnimationConfig.IsAssigned(animationId) then
         return animationId
     end
-
+    if slot == "DashLight" then
+        return CombatAnimationConfig.GetAnimationId("Light1", weaponId)
+    end
     return nil
 end
 
@@ -195,10 +228,23 @@ function CombatAnimationConfig.PickHitSlot(weaponId, lastSlot, random)
     return candidates[math.min(#candidates, math.floor(roll * #candidates) + 1)]
 end
 
+function CombatAnimationConfig.IsStunSlot(slot)
+    return slot == "Parried" or slot == "Stunned"
+        or table.find(CombatAnimationConfig.HitSlots, slot) ~= nil
+end
+
+function CombatAnimationConfig.GetStunSlot(source, weaponId, lastHitSlot)
+    if source == "Hit" then
+        return CombatAnimationConfig.PickHitSlot(weaponId, lastHitSlot)
+    end
+    local slot = source == "Parry" and "Parried" or "Stunned"
+    return CombatAnimationConfig.GetAnimationId(slot, weaponId) and slot or nil
+end
+
 -- Слоты, которые использует код боевых анимаций (клиент игрока и NPC).
 CombatAnimationConfig.RequiredSlots = {
-    "Attack", "Light1", "Light2", "Light3", "BlockStart", "BlockLoop", "BlockHit", "Parry", "Parried",
-    "Hit1", "Hit2", "Hit3", "Stunned", "Dodge", "UnarmedIdle"
+    "Attack", "Light1", "Light2", "Light3", "DashLight", "BlockStart", "BlockLoop", "BlockHit", "Parry", "Parried",
+    "Hit1", "Hit2", "Hit3", "Stunned", "DashForward", "DashBackward", "DashLeft", "DashRight", "Dodge", "DodgeForward", "DodgeBackward", "DodgeLeft", "DodgeRight", "UnarmedIdle"
 }
 
 -- Проверка согласованности конфигурации. Возвращает список проблем (пустой = всё в порядке).

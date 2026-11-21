@@ -175,7 +175,7 @@ end
 --
 -- На ЭТАПЕ 1 этот метод ещё НЕ запускает CombatService и НЕ меняет CombatState.
 -- Он только готовит combo state.
-function ComboService:BeginSeries(character, weaponId, attackId)
+function ComboService:BeginSeries(character, weaponId, attackId, alternateMoveId)
     if not IsCharacterAlive(character) then
         return false, "CharacterUnavailable"
     end
@@ -189,6 +189,11 @@ function ComboService:BeginSeries(character, weaponId, attackId)
     local moveId, move =
         WeaponComboConfig.GetStartMove(weaponId)
 
+    if alternateMoveId then
+        moveId = alternateMoveId
+        move = WeaponComboConfig.GetMove(weaponId, moveId)
+        if not move or not move.AlternativeStart then return false, "InvalidAlternateStart" end
+    end
     if not move then
         return false, "NoStartMove"
     end

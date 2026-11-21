@@ -13,6 +13,7 @@ local Functions = {}
 local EVENT_NAMES = {
     "ProfileUpdated",     -- сервер -> клиент
     "CombatRequest",      -- клиент -> сервер (см. CombatService)
+    "CombatVFX",          -- server -> nearby clients: confirmed impact effects
     "CombatFeedback",     -- сервер -> клиент (попадания, числа урона)
     "CombatStateRequest", -- клиент -> сервер: "BlockStart" | "BlockEnd" | "Sync" (см. CombatService)
     "CombatStateChanged", -- сервер -> клиент: { State, OldState, Phase, TransitionId }

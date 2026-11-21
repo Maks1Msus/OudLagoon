@@ -3,6 +3,7 @@
 -- клиент только для темпа атак и анимаций (решает всё равно сервер).
 
 local CombatConfig = {}
+CombatConfig.DebugHitboxes = true
 
 -- Атрибут Tool, по которому СЕРВЕР определяет оружие.
 -- Ставится только сервером: клиент не может создать Tool или изменить атрибут так,
@@ -40,9 +41,18 @@ CombatConfig.HitboxHeight = 6
 -- Печатать в Output каждую атаку (удобно при отладке, потом выключить)
 CombatConfig.DebugLogging = true
 
--- Как часто (сек) сервер проверяет попадания, пока атака находится в фазе Active.
+-- Интервал серверных проверок Active. 0 = каждый Heartbeat, после шага физики.
 -- Каждая цель всё равно поражается не более одного раза за удар.
-CombatConfig.ActiveScanInterval = 0.05
+CombatConfig.ActiveScanInterval = 0
+
+-- Server-measured RTT / 2 estimates the replicated attacker's horizontal position delay.
+-- This is bounded extrapolation, not target rewind or full lag compensation.
+CombatConfig.HitboxPrediction = {
+    Enabled = true,
+    MaxTime = 0.10,
+    MaxDistance = 1.5,
+    MaxSpeed = 40,
+}
 
 -- Урон = BaseDamage + Strength * Scaling
 -- Cooldown   - пауза между НАЧАЛАМИ атак (сек); не зависит от длительности самого удара
@@ -77,7 +87,7 @@ CombatConfig.Weapons = {
             CanDodgeDuringRecovery = true,
             CanBlockDuringRecovery = true,
         },
-        AttackRange = 5,
+        AttackRange = 7,
         HitboxWidth = 4,
         MaxTargets = 5,
     },
@@ -108,7 +118,7 @@ CombatConfig.Weapons = {
             CanDodgeDuringRecovery = true,
             CanBlockDuringRecovery = true,
         },
-        AttackRange = 6,
+        AttackRange = 9,
         HitboxWidth = 5,
         MaxTargets = 5,
     },

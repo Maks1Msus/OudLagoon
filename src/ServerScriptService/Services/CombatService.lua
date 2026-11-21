@@ -28,6 +28,9 @@ local ComboService = require(script.Parent.ComboService)
 local WeaponComboConfig = require(ReplicatedStorage.Shared.Config.WeaponComboConfig)
 local NPCCombatAnimationService = require(script.Parent.NPCCombatAnimationService)
 
+local DashService = require(script.Parent.DashService)
+local HitboxPose = require(ReplicatedStorage.Shared.Combat.HitboxPose)
+
 local CombatService = {}
 
 -- [player или character NPC] = момент времени (os.clock), раньше которого следующая атака
@@ -37,6 +40,42 @@ local NextAttackAt = setmetatable({}, { __mode = "k" })
 -- [character] = данные текущего удара, пока он не завершился:
 -- { AttackId, Player (nil у NPC), Character, WeaponId, Weapon, Strength (только NPC), TracksCombo }
 local Attacks = setmetatable({}, { __mode = "k" })
+-- Debug drawing follows the same root locally on every client. It is not a server-position snapshot.
+local DebugHitboxes = setmetatable({}, { __mode = "k" })
+
+local function ClearDebugHitbox(character, attackId)
+    local record = DebugHitboxes[character]
+    if record and (attackId == nil or record.AttackId == attackId) then
+        record.Box:Destroy()
+        DebugHitboxes[character] = nil
+    end
+end
+
+local function UpdateDebugHitbox(character, root, weapon, boxSize, attackId)
+    if not CombatConfig.DebugHitboxes or not attackId then
+        ClearDebugHitbox(character)
+        return
+    end
+    local record = DebugHitboxes[character]
+    if record and (record.AttackId ~= attackId or record.Root ~= root or not record.Box.Parent) then
+        ClearDebugHitbox(character)
+        record = nil
+    end
+    if not record then
+        local box = Instance.new("BoxHandleAdornment")
+        box.Name = "DebugAttackHitbox"
+        box.Adornee = root
+        box.AlwaysOnTop = false
+        box.Color3 = Color3.fromRGB(255, 80, 80)
+        box.Transparency = 0.75
+        box.Parent = root
+        record = { Box = box, Root = root, AttackId = attackId }
+        DebugHitboxes[character] = record
+    end
+    record.Box.Size = boxSize
+    record.Box.CFrame = CFrame.new(0, 0, -weapon.AttackRange / 2)
+end
+
 local function CanTrackCombo(attack)
     if attack.TracksCombo and not ComboService:ValidateWeapon(attack.Character) then
         attack.TracksCombo = false
@@ -53,10 +92,9 @@ end
 
 -- ОГЛУШЕНИЕ СПОСОБНОСТЬЮ -------------------------------------------------
 
--- Оглушает персонажа (игрока или NPC) способностью и сообщает об этом явным событием:
--- игроку - CombatFeedback { Kind = "Reaction", Reaction = "Stunned" }, NPC - реакция
--- Stunned его Animator. Только это событие включает анимацию Stunned: оглушение от удара и
--- парирования показывается реакциями Hit1..3 и Parried, а не Stunned.
+-- Оглушает игрока или NPC способностью с Source = "Ability".
+-- Анимация Stunned следует серверному состоянию и его сроку окончания.
+-- CombatFeedback сохраняется для совместимости с другими подписчиками.
 -- duration - секунды (по умолчанию CombatStateConfig.Stun.AbilityDuration; ограничивается
 -- Stun.MaxDuration). Правила ApplyStun (иммунитет, уже оглушён, смерть) действуют как обычно.
 -- Возвращает true, <TransitionId> либо false, <причина>.
@@ -168,9 +206,9 @@ end
 -- Проверка расстояния и направления до HumanoidRootPart цели.
 -- Область удара (hitbox) находит кандидатов по ЛЮБЫМ частям модели, поэтому у крупных
 -- NPC она может зацепить тело, корень которого лежит далеко за пределами досягаемости.
-local function IsRootReachable(attackerRoot, targetRoot, weapon)
-    local offset = targetRoot.Position - attackerRoot.Position
-    local look = attackerRoot.CFrame.LookVector
+local function IsRootReachable(attackerFrame, targetRoot, weapon)
+    local offset = targetRoot.Position - attackerFrame.Position
+    local look = attackerFrame.LookVector
 
     local tolerance = weapon.RootRangeTolerance or CombatConfig.RootRangeTolerance
     local maxAngle = weapon.MaxAttackAngle or CombatConfig.MaxAttackAngle
@@ -222,7 +260,7 @@ local function IsPvPAllowed(attacker, model)
     return targetPlayer ~= attacker and CombatConfig.PvPEnabled
 end
 
--- Область удара определяется сервером по положению и направлению персонажа.
+-- Область удара использует серверный root с ограниченным прогнозом XZ-позиции атакующего.
 -- Клиент не присылает ни цели, ни координаты.
 -- attacker - Player атакующего либо nil, если бьёт NPC (character всё равно передаётся).
 -- Кандидат должен пройти по порядку: жив -> корень в пределах дальности и угла ->
@@ -247,11 +285,14 @@ function CombatService:FindTargets(attacker, character, root, weapon, options)
         weapon.AttackRange
     )
 
-    local boxCFrame = root.CFrame * CFrame.new(0, 0, -weapon.AttackRange / 2)
+    local origin = HitboxPose.Resolve(character, root, attacker)
+    local boxCFrame = origin * CFrame.new(0, 0, -weapon.AttackRange / 2)
+    local debugAttackId = options and options.AttackId or CombatStateService:GetAttackId(character)
+    UpdateDebugHitbox(character, root, weapon, boxSize, debugAttackId)
 
     local parts = workspace:GetPartBoundsInBox(boxCFrame, boxSize, overlapParams)
 
-    local stats = { Candidates = 0, Distance = 0, Direction = 0 }
+    local stats = { Candidates = 0, Distance = 0, Direction = 0, LeadDistance = (origin.Position - root.Position).Magnitude }
     local seen = {} -- одна модель = одна цель, сколько бы её частей ни попало в область
     local targets = {}
 
@@ -266,7 +307,7 @@ function CombatService:FindTargets(attacker, character, root, weapon, options)
             if humanoid.Health > 0 and targetRoot and not (excluded and excluded[model]) then
                 stats.Candidates += 1
 
-                local reachable, reason = IsRootReachable(root, targetRoot, weapon)
+                local reachable, reason = IsRootReachable(origin, targetRoot, weapon)
 
                 if not reachable then
                     stats[reason] += 1
@@ -274,7 +315,7 @@ function CombatService:FindTargets(attacker, character, root, weapon, options)
                     table.insert(targets, {
                         Model = model,
                         Humanoid = humanoid,
-                        Distance = (targetRoot.Position - root.Position).Magnitude,
+                        Distance = (targetRoot.Position - origin.Position).Magnitude,
                     })
                 end
             end
@@ -289,7 +330,7 @@ function CombatService:FindTargets(attacker, character, root, weapon, options)
         table.remove(targets)
     end
 
-    return targets, stats
+    return targets, stats, origin
 end
 
 -- АТАКА -----------------------------------------------------------------
@@ -353,21 +394,24 @@ function CombatService:RunActiveWindow(attack)
 
         scans += 1
 
-        local targets, stats = self:FindTargets(player, character, root, weapon, {
+        local targets, stats, hitboxOrigin = self:FindTargets(player, character, root, weapon, {
+            AttackId = attackId,
             Excluded = CombatStateService:GetHitTargets(character, attackId),
             Limit = remaining,
         })
 
         for _, target in ipairs(targets) do
             -- RegisterHit подтверждает, что удар ещё в Active и цель ещё не поражена
-            if CombatStateService:RegisterHit(character, attackId, target.Model) then
+            if not CombatStateService:IsDodgeInvulnerable(target.Model)
+                and CombatStateService:RegisterHit(character, attackId, target.Model)
+            then
                 hits += 1
 
                 -- Направление блока берётся от позиции атакующего на момент попадания
                 local outcome = CombatStateService:ApplyDamage(
                     target.Model,
                     damage,
-                    root.Position,
+                    hitboxOrigin.Position,
                     character,
                     attackId
                 )
@@ -466,13 +510,15 @@ function CombatService:RunActiveWindow(attack)
                 "rejected: distance",
                 stats.Distance,
                 "direction",
-                stats.Direction
+                stats.Direction,
+                "lead", stats.LeadDistance
             )
         end
 
         task.wait(CombatConfig.ActiveScanInterval)
     end
 
+    ClearDebugHitbox(character, attackId)
     Log(ownerName, "attack", attackId, "window closed | hits", hits, "| scans", scans)
 end
 
@@ -549,6 +595,36 @@ local function BeginAttack(self, character, owner, strength)
     Log(owner and owner.Name or character.Name, "attack", attackId, weaponId, "started")
 
     return true, attackId
+end
+
+-- Direct Dodging -> Attacking. CombatStateService owns the independent DashLight cooldown.
+function CombatService:BeginDashAttack(player, dashId)
+    if not DataService:GetProfile(player) then return false, "NoProfile" end
+    local character = player.Character
+    local allowed, weaponId = DashService:CanConvertToAttack(character, dashId)
+    if not allowed then return false, weaponId end
+    local weapon = WeaponRegistry.Get(weaponId)
+    local move = WeaponComboConfig.GetMove(weaponId, "DashLight")
+    if not weapon or not move then return false, "NoDashLight" end
+    local momentum = DashService:GetMomentum(character, dashId, move.Startup)
+    local started, attackId = CombatStateService:StartDashAttack(character, GetMoveTiming(weapon, move), {
+        MoveId = "DashLight", ComboIndex = move.Index, DashMomentum = momentum,
+    }, dashId)
+    if not started then return false, attackId end
+    Attacks[character] = {
+        AttackId = attackId, Player = player, Character = character,
+        WeaponId = weaponId, Weapon = weapon, Move = move,
+        TracksCombo = ComboService:BeginSeries(character, weaponId, attackId, "DashLight"),
+    }
+    Log(player.Name, "attack", attackId, "DashLight", "converted from dash", dashId)
+    return true, attackId
+end
+
+function CombatService:RequestDashAttack(player, requestId)
+    if not DataService:GetProfile(player) then return false, "NoProfile" end
+    return DashService:RequestAttack(player, requestId,
+        function(dashId) return self:BeginDashAttack(player, dashId) end,
+        function() return self:PerformAttack(player) end)
 end
 
 -- Атака игрока по запросу клиента.
@@ -644,12 +720,19 @@ end
 local STATE_REQUEST_ACTIONS = {
     BlockStart = true,
     ComboParry = true,
+    Dodge = true,
+    DashSteer = true,
+    DashEnd = true,
+    DashAttack = true,
     BlockEnd = true,
     Sync = true,
 }
 
 -- Отправляет игроку его текущее боевое состояние.
 local function SendState(player, payload)
+    payload.Character = player.Character
+    payload.DodgeAnimation = CombatStateService:GetDodgeAnimationState(player.Character)
+    payload.StunAnimation = CombatStateService:GetStunAnimationState(player.Character)
     payload.AttackAnimation = CombatStateService:GetAttackAnimationState(player.Character)
     payload.AttackId, payload.MoveId, payload.ComboIndex =
         CombatStateService:GetAttackIdentity(player.Character)
@@ -659,15 +742,31 @@ end
 -- Клиент сообщает только о намерении ("BlockStart" / "BlockEnd" / "Sync").
 -- Разрешено ли действие, решает CombatStateService; запрещённые запросы просто отклоняются.
 -- Запоздавший или повторный BlockEnd безопасен: StopBlock действует только во время блока.
-function CombatService:HandleStateRequest(player, action)
+function CombatService:HandleStateRequest(player, action, direction, requestId)
     local character = player.Character
     local humanoid = character and character:FindFirstChildOfClass("Humanoid")
 
-    if not humanoid or humanoid.Health <= 0 then
-        return false, "CharacterUnavailable"
+    if action == "Dodge" then
+        local accepted, result = DashService:PerformDodge(player, direction, requestId)
+        RemoteService:GetEvent("CombatStateChanged"):FireClient(player, {
+            DashReply = {
+                RequestId = requestId, Character = character, Accepted = accepted,
+                DashId = accepted and result or nil, Reason = not accepted and result or nil,
+                Direction = accepted and DashService:GetDirection(character) or nil,
+                CooldownRemaining = CombatStateService:GetDodgeCooldownRemaining(character, direction),
+            },
+        })
+        return accepted, result
     end
+    if not humanoid or humanoid.Health <= 0 then return false, "CharacterUnavailable" end
 
-    if action == "ComboParry" then
+    if action == "DashAttack" then
+        return self:RequestDashAttack(player, direction)
+    elseif action == "DashEnd" then
+        return DashService:EndMovement(player, direction)
+    elseif action == "DashSteer" then
+        return DashService:Steer(player, direction)
+    elseif action == "ComboParry" then
         return CombatStateService:TryComboParry(character)
     elseif action == "BlockStart" then
         return CombatStateService:StartBlock(character)
@@ -690,6 +789,7 @@ end
 function CombatService:Init()
     -- Ошибка конфигурации должна проявиться при запуске, а не в бою
     WeaponRegistry.Validate()
+    HitboxPose.Validate()
 
     Players.PlayerRemoving:Connect(function(player)
         NextAttackAt[player] = nil
@@ -698,6 +798,7 @@ function CombatService:Init()
     -- Фаза Active началась: запускаем окно попаданий этого удара
     CombatStateService:OnAttackPhaseChanged(function(character, phase, attackId)
         if phase ~= CombatStates.AttackPhases.Active then
+            ClearDebugHitbox(character, attackId)
             return
         end
 
@@ -711,10 +812,17 @@ function CombatService:Init()
     end)
 
     CombatStateService:OnRecoveryFinished(ContinueCombo)
+    CombatStateService:OnStunUpdated(function(character)
+        local owner = Players:GetPlayerFromCharacter(character)
+        if owner and CombatStateService:GetState(character) == CombatStates.Stunned then
+            SendState(owner, { State = CombatStates.Stunned })
+        end
+    end)
 
     -- Удар закончился (в том числе прерван): данные удара больше не нужны
     CombatStateService:OnStateChanged(function(character, newState, oldState)
         if oldState == CombatStates.Attacking and newState ~= CombatStates.Attacking then
+            ClearDebugHitbox(character)
             local attack = Attacks[character]
 
             if attack and attack.TracksCombo then
@@ -758,12 +866,24 @@ function CombatService:Init()
     -- Блок: клиент присылает только "BlockStart" / "BlockEnd" / "Sync".
     RemoteService:OnEvent("CombatStateRequest", {
         RateLimit = 20,
-        Validate = function(action)
-            return RemoteService.Check.String(action, 16)
-                and STATE_REQUEST_ACTIONS[action] == true
+        Validate = function(action, direction, requestId)
+            if not RemoteService.Check.String(action, 16) or not STATE_REQUEST_ACTIONS[action] then return false end
+            if action == "DashAttack" then
+                return type(direction) == "number" and direction >= 1 and direction <= 2147483646
+                    and direction % 1 == 0
+            end
+            if action == "DashEnd" then
+                return type(direction) == "number" and direction > 0 and direction < math.huge
+                    and direction % 1 == 0
+            end
+            if action == "Dodge" then
+                return DashService.IsValidDirection(direction) and type(requestId) == "number"
+                    and requestId >= 1 and requestId <= 2147483646 and requestId % 1 == 0
+            end
+            return action ~= "DashSteer" or DashService.IsValidDirection(direction)
         end,
-    }, function(player, action)
-        self:HandleStateRequest(player, action)
+    }, function(player, action, direction, requestId)
+        self:HandleStateRequest(player, action, direction, requestId)
     end)
 
     -- Клиент присылает только команду "Attack": без урона, целей и координат.

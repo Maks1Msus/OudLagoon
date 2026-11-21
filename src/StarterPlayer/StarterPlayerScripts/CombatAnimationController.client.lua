@@ -1,35 +1,6 @@
--- Клиентская система боевых анимаций. Работает независимо от CombatController.
---
--- Источник правды - сервер: анимация запускается только после того, как сервер подтвердил
--- переход состояния (CombatStateChanged) или результат удара (CombatFeedback, Kind = "Received").
--- Эта система ничего не отправляет на сервер и не влияет на урон, кулдауны и тайминги.
---
--- Анимации проигрываются на Animator своего персонажа, поэтому другие игроки видят их
--- через стандартную репликацию Roblox.
---
--- Соответствие состояний и анимаций:
---   Attacking (переход из другого состояния) -> Attack (одна анимация на все фазы удара)
---   Blocking                                 -> BlockStart, затем BlockLoop (пока держится блок)
---   Stunned (переход состояния)              -> текущая поза (блок, атака) останавливается;
---                                               анимацию Stunned состояние само НЕ запускает
---   Dodging                                  -> Dodge
---   Idle / Dead                              -> боевая анимация останавливается
--- Смена фаз атаки (Startup/Active/Recovery) анимацию не перезапускает.
---
--- Результат удара по своему персонажу (CombatFeedback, Kind = "Received"):
---   Parried -> Parry заменяет блок, после неё снова включается BlockLoop;
---   Blocked -> BlockHit накладывается поверх блока (блок не прерывается);
---   Hit     -> один из Hit1..3 (getRandomHitSlot, без повтора подряд) поверх текущей позы,
---              кроме состояний из Settings.SuppressHitDuring (то же правило, что у NPC).
---
--- Явные реакции (CombatFeedback, Kind = "Reaction"):
---   Parried - мой удар парировали;
---   Stunned - меня оглушила способность (CombatService:ApplyAbilityStun). Это единственное,
---             что включает анимацию Stunned. Оглушение от удара и парирования её не включает.
---
--- Восстановление (Sync): ответ на Sync помечен Sync = true и содержит Elapsed (сколько секунд
--- состояние длится на сервере). Анимация запускается с этого места. Если Sync пришёл раньше,
--- чем загрузился Animator, он откладывается и применяется после загрузки.
+-- Client animation of authoritative combat states and stun reactions.
+-- Hit/Parried/Stunned clips follow server stun deadlines.
+-- Parry and BlockHit feedback provide short defensive reactions.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -43,6 +14,8 @@ local CombatAnimationConfig = require(Shared:WaitForChild("Config"):WaitForChild
 local CombatStates = require(Shared:WaitForChild("Constants"):WaitForChild("CombatStates"))
 local WeaponRegistry = require(Shared:WaitForChild("Weapons"):WaitForChild("WeaponRegistry"))
 local AttackAnimationSync = require(Shared:WaitForChild("Combat"):WaitForChild("AttackAnimationSync"))
+local DashConfig = require(Shared:WaitForChild("Config"):WaitForChild("DashConfig"))
+local CombatReactionSync = require(Shared:WaitForChild("Combat"):WaitForChild("CombatReactionSync"))
 
 local Events = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("Events")
 local CombatStateChanged = Events:WaitForChild("CombatStateChanged")
@@ -56,8 +29,6 @@ local SLOT_BLOCK_START = "BlockStart"
 local SLOT_BLOCK_LOOP = "BlockLoop"
 local SLOT_BLOCK_HIT = "BlockHit"
 local SLOT_PARRY = "Parry"
-local SLOT_PARRIED = "Parried"
-local SLOT_STUNNED = "Stunned"
 
 -- Слоты, из которых состоит блок (для проверки "блок уже показывается")
 local BLOCK_SLOTS = {
@@ -76,7 +47,7 @@ local animations = {} -- [slot .. "|" .. animationId] = Animation (для пре
 local activeSlot = nil
 local activeTrack = nil
 
--- Короткая реакция (Hit / BlockHit), накладывается поверх активной анимации
+-- Короткая реакция BlockHit поверх активной позы блока
 local reactionTrack = nil
 
 -- Последний показанный вариант Hit (чтобы одна и та же реакция не шла подряд)
@@ -96,6 +67,9 @@ local characterConnections = {}
 -- Состояние от сервера, пришедшее раньше, чем загрузился Animator
 local pendingPayload = nil
 local animatedAttackId = nil
+local animatedDodgeId = nil
+local animatedStunId = nil
+local animatedStunRevision = nil
 
 local function debugLog(...)
     if Settings.DebugLogging then
@@ -172,6 +146,7 @@ local function stopActive(fadeTime)
 
     if activeTrack then
         AttackAnimationSync.Stop(activeTrack)
+        CombatReactionSync.Stop(activeTrack)
         activeTrack:Stop(fadeTime or Settings.FadeOutTime)
     end
 
@@ -185,17 +160,6 @@ local function stopReaction(fadeTime)
     end
 
     reactionTrack = nil
-end
-
--- Случайный слот Hit1..3 среди назначенных, не равный предыдущему. nil, если анимаций нет.
-local function getRandomHitSlot(weaponId)
-    local slot = CombatAnimationConfig.PickHitSlot(weaponId, lastHitSlot)
-
-    if slot then
-        lastHitSlot = slot
-    end
-
-    return slot
 end
 
 -- Забывает все треки текущего персонажа (респавн, удаление персонажа).
@@ -230,6 +194,9 @@ local function resetTracks()
     characterHumanoid = nil
     pendingPayload = nil
     lastHitSlot = nil
+    animatedDodgeId = nil
+    animatedStunId = nil
+    animatedStunRevision = nil
     currentState = CombatStates.Idle
 end
 
@@ -485,6 +452,30 @@ local function enterBlock(weaponId, elapsed)
     end
 end
 
+local function applyStunReaction(snapshot, weaponId)
+    if not snapshot or snapshot.EndsAt <= workspace:GetServerTimeNow() then
+        return
+    end
+
+    if animatedStunId ~= snapshot.Id or animatedStunRevision ~= snapshot.Revision then
+        animatedStunId = snapshot.Id
+        animatedStunRevision = snapshot.Revision
+        stopReaction(0)
+        local slot = CombatAnimationConfig.GetStunSlot(snapshot.Source, weaponId, lastHitSlot)
+        if snapshot.Source == "Hit" and slot then
+            lastHitSlot = slot
+        end
+        if not slot or not playSlot(slot, weaponId) then
+            stopActive()
+            return
+        end
+    end
+
+    if activeTrack and CombatAnimationConfig.IsStunSlot(activeSlot) then
+        CombatReactionSync.Update(activeTrack, snapshot)
+    end
+end
+
 -- СОСТОЯНИЕ ОТ СЕРВЕРА ---------------------------------------------------
 
 -- restoring = true: это снимок состояния (Sync или отложенное сообщение), а не переход.
@@ -493,11 +484,16 @@ local function applyState(payload, restoring)
     local elapsed = type(payload.Elapsed) == "number" and math.max(payload.Elapsed, 0) or 0
     local weaponId = getWeaponId()
 
-    -- End the outgoing attack even when movement prevents UnarmedIdle.
-    if state ~= CombatStates.Attacking and activeTrack
-        and CombatAnimationConfig.IsAttackSlot(activeSlot)
-    then
-        stopActive()
+    if activeTrack and (
+        (CombatAnimationConfig.IsAttackSlot(activeSlot) and state ~= CombatStates.Attacking)
+        or (CombatAnimationConfig.IsStunSlot(activeSlot) and state ~= CombatStates.Stunned)
+        or (BLOCK_SLOTS[activeSlot] and state ~= CombatStates.Blocking)
+        or (CombatAnimationConfig.IsDodgeSlot(activeSlot) and state ~= CombatStates.Dodging)
+    ) then
+        stopActive(0.05)
+    end
+    if state ~= CombatStates.Blocking then
+        stopReaction(0.05)
     end
 
     if state == CombatStates.Attacking then
@@ -519,13 +515,27 @@ local function applyState(payload, restoring)
     elseif state == CombatStates.Blocking then
         enterBlock(weaponId, restoring and elapsed or 0)
     elseif state == CombatStates.Stunned then
-        -- Анимацию Stunned состояние не запускает. Но поза блока/атаки не должна оставаться.
-        -- Реакции Parried/Stunned могли прийти раньше этого сообщения (разные события): их не трогаем.
-        if activeSlot ~= SLOT_PARRIED and activeSlot ~= SLOT_STUNNED then
-            stopActive()
-        end
+        applyStunReaction(payload.StunAnimation, weaponId)
     elseif state == CombatStates.Dodging then
-        playSlot("Dodge", weaponId, restoring and elapsed or nil)
+        if characterHumanoid and characterHumanoid:GetAttribute(DashConfig.MotionFinishedAttribute) then
+            if activeTrack and CombatAnimationConfig.IsDodgeSlot(activeSlot) then
+                stopActive(DashConfig.HandoffAnimationFade)
+            end
+            return -- delayed confirmations must not cover locomotion with an old dash clip
+        end
+        local snapshot = payload.DodgeAnimation
+        if snapshot and snapshot.Id ~= animatedDodgeId then
+            animatedDodgeId = snapshot.Id
+            local slot = CombatAnimationConfig.GetDodgeSlot(snapshot.DirectionId, weaponId)
+            if slot then
+                playSlot(slot, weaponId)
+            else
+                stopActive()
+            end
+        end
+        if snapshot and activeTrack and CombatAnimationConfig.IsDodgeSlot(activeSlot) then
+            CombatReactionSync.Update(activeTrack, snapshot)
+        end
     elseif state == CombatStates.Idle then
         if payload.OldState == CombatStates.Attacking
             and weaponId == "Unarmed"
@@ -578,14 +588,7 @@ local function onFeedback(payload)
     local weaponId = getWeaponId()
 
     if payload.Kind == "Reaction" then
-        if payload.Reaction == "Parried" then
-            playSlot(SLOT_PARRIED, weaponId)
-        elseif payload.Reaction == "Stunned" then
-            if not playSlot(SLOT_STUNNED, weaponId) and activeSlot ~= SLOT_STUNNED then
-                stopActive() -- анимации нет: хотя бы не оставляем позу блока/атаки
-            end
-        end
-
+        -- Stun reactions are driven by authoritative state, avoiding cross-remote races.
         return
     end
 
@@ -610,18 +613,7 @@ local function onFeedback(payload)
             playReaction(SLOT_BLOCK_HIT, weaponId)
         end
 
-    elseif payload.Result == DamageResults.Hit then
-        -- То же правило, что у NPC (Settings.SuppressHitDuring). Берём состояние в момент
-        -- удара от сервера: к приходу Received currentState уже может быть Stunned от этого удара.
-        local stateAtHit = type(payload.VictimState) == "string" and payload.VictimState or currentState
 
-        if CombatAnimationConfig.ShouldPlayHit(stateAtHit) then
-            local hitSlot = getRandomHitSlot(weaponId)
-
-            if hitSlot then
-                playReaction(hitSlot, weaponId)
-            end
-        end
     end
 end
 
@@ -652,6 +644,12 @@ local function bindCharacter(character)
 
     animator = characterAnimator
     characterHumanoid = humanoid
+    table.insert(characterConnections, humanoid:GetAttributeChangedSignal(DashConfig.MotionFinishedAttribute):Connect(function()
+        if humanoid:GetAttribute(DashConfig.MotionFinishedAttribute)
+            and activeTrack and CombatAnimationConfig.IsDodgeSlot(activeSlot) then
+            stopActive(DashConfig.HandoffAnimationFade)
+        end
+    end))
         table.insert(
         characterConnections,
         humanoid.Running:Connect(function(speed)

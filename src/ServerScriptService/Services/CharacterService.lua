@@ -4,6 +4,8 @@ local GameConstants = require(
     ReplicatedStorage.Shared.Constants.GameConstants
 )
 
+local CombatMovementService = require(script.Parent.CombatMovementService)
+
 local CharacterService = {}
 
 -- Максимум маны считается из очков характеристики Mana.
@@ -74,7 +76,7 @@ function CharacterService:UpdateDerivedStats(player, humanoid, profile)
     local stats = profile.Stats
 
     humanoid.MaxHealth = CalculateMaxHealth(stats)
-    humanoid.WalkSpeed = CalculateWalkSpeed(stats)
+    CombatMovementService:SetBaseWalkSpeed(humanoid, CalculateWalkSpeed(stats))
 
     self:RefreshAttributes(player, profile)
 end
