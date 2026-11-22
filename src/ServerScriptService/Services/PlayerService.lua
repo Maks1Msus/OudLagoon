@@ -10,6 +10,7 @@ local CharacterService = require(script.Parent.CharacterService)
 local RemoteService = require(script.Parent.RemoteService)
 
 local PlayerService = {}
+local ProfileRevisions = setmetatable({}, { __mode = "k" })
 
 local PROFILE_WAIT_TIMEOUT = 20
 
@@ -22,7 +23,7 @@ local KICK_MESSAGES = {
 -- Клиенту отправляем только то, что ему нужно для интерфейса.
 -- Единственное место, где собирается профиль для клиента:
 -- ProgressionService и DebugService тоже отправляют его через PushProfile.
-local function BuildPublicProfile(profile)
+local function BuildPublicProfile(player, profile)
     local nextLevelExperience = 0
 
     if profile.Level < ProgressionConfig.MaxLevel then
@@ -31,11 +32,23 @@ local function BuildPublicProfile(profile)
     end
 
     return {
+        Revision = ProfileRevisions[player] or 0,
         Level = profile.Level,
         Experience = profile.Experience,
         NextLevelExperience = nextLevelExperience, -- 0 на максимальном уровне
         StatPoints = profile.StatPoints,
-        Stats = profile.Stats,
+        Stats = { Attributes = table.clone(profile.Stats.Attributes) },
+        Proficiencies = table.clone(profile.Proficiencies),
+        Magic = {
+            ManaCapacity = profile.Magic.ManaCapacity,
+            GateThroughput = profile.Magic.GateThroughput,
+            GateStability = profile.Magic.GateStability,
+            Affinities = table.clone(profile.Magic.Affinities),
+        },
+        Identity = {
+            Traits = table.clone(profile.Traits),
+            DominantDirection = profile.SpiritualProfile.DominantDirection,
+        },
         Resources = profile.Resources,
     }
 end
@@ -48,10 +61,10 @@ function PlayerService:PushProfile(player)
         return
     end
 
-    RemoteService:GetEvent("ProfileUpdated"):FireClient(
-        player,
-        BuildPublicProfile(profile)
-    )
+    ProfileRevisions[player] = (ProfileRevisions[player] or 0) + 1
+    local snapshot = BuildPublicProfile(player, profile)
+    RemoteService:GetEvent("ProfileUpdated"):FireClient(player, snapshot)
+    return snapshot
 end
 
 local function OnCharacterAdded(player, character)
@@ -124,7 +137,7 @@ function PlayerService:Init()
             return nil
         end
 
-        return BuildPublicProfile(profile)
+        return BuildPublicProfile(player, profile)
     end)
 
     -- Обработка игроков, которые уже находятся на сервере.

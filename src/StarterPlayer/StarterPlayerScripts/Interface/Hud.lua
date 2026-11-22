@@ -1,0 +1,39 @@
+local Theme = require(script.Parent.Theme)
+local Colors = Theme.Colors
+local px = UDim2.fromOffset
+local Hud = {}
+
+local function createMeter(parent, name, y, color)
+    local track = Theme.frame(parent, name, px(0, y), px(232, 20), Colors.Surface)
+    local fill = Theme.frame(track, "Fill", px(0, 0), UDim2.fromScale(0, 1), color)
+    local label = Theme.label(track, "Value", "", px(8, 0), px(216, 20), 12)
+    label.TextColor3 = Colors.Text
+    label.ZIndex = 2
+    Theme.outline(track)
+
+    return function(current, maximum)
+        local ratio = maximum > 0 and math.clamp(current / maximum, 0, 1) or 0
+        fill.Size = UDim2.fromScale(ratio, 1)
+        label.Text = maximum > 0 and string.format("%s   %d / %d",
+            name, math.round(current), math.round(maximum)) or name .. "   —"
+    end
+end
+
+function Hud.new(parent, toggle)
+    local status = Theme.frame(parent, "Vitals", UDim2.new(0, 24, 1, -24), px(232, 44))
+    status.AnchorPoint = Vector2.new(0, 1)
+
+    local button = Theme.button(parent, "OpenCharacter", "Character  [B]",
+        UDim2.new(1, -24, 1, -24), px(152, 40), toggle)
+    button.AnchorPoint = Vector2.one
+    Theme.outline(button)
+
+    return {
+        Status = status,
+        OpenButton = button,
+        Health = createMeter(status, "Health", 0, Colors.Health),
+        Mana = createMeter(status, "Mana", 24, Colors.Mana),
+    }
+end
+
+return Hud

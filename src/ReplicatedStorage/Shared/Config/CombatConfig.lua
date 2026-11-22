@@ -78,6 +78,7 @@ CombatConfig.Weapons = {
         Equippable = false, -- бой без оружия: не предмет, в рюкзак не выдаётся
         BaseDamage = 5,
         Scaling = 0.5,
+        AttributeScaling = { Strength = 0.35, Dexterity = 0.15, Proficiency = 0.30 },
         Cooldown = 0.8,
         HitStun = 0.20,
         AttackTiming = {
@@ -109,6 +110,7 @@ CombatConfig.Weapons = {
         },
         BaseDamage = 15,
         Scaling = 0.8,
+        AttributeScaling = { Strength = 0.35, Dexterity = 0.20, Proficiency = 0.45 },
         Cooldown = 1.0,
         HitStun = 0.22,
         AttackTiming = {

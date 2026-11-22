@@ -5,6 +5,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local GameConfig = require(
     ReplicatedStorage.Shared.Config.GameConfig
 )
+local ProgressionConfig = require(ReplicatedStorage.Shared.Config.ProgressionConfig)
 
 local DataService = {}
 
@@ -76,6 +77,9 @@ local function CreateDefaultData()
         Experience = GameConfig.StartingExperience,
 
         Stats = DeepCopy(GameConfig.StartingStats),
+        Proficiencies = DeepCopy(GameConfig.StartingProficiencies),
+        Magic = DeepCopy(GameConfig.StartingMagic),
+        Traits = {},
 
         Resources = DeepCopy(GameConfig.StartingResources),
 
@@ -112,6 +116,39 @@ Migrations[1] = function(data)
     if type(data.Stats) == "table" and type(data.Stats.Mana) == "number" then
         data.Stats.Mana = math.max(10, data.Stats.Mana - 90)
     end
+end
+
+Migrations[2] = function(data)
+    local stats = data.Stats
+    if type(stats) ~= "table" then
+        stats = {}
+        data.Stats = stats
+    end
+
+    local attributes = table.clone(ProgressionConfig.StartingAttributes)
+    local refund = 0
+    local baseline = ProgressionConfig.BaseAttributeValue
+    local legacyStats = {
+        Strength = "Strength", Vitality = "Vitality", Agility = "Dexterity",
+        Intelligence = false, Mana = false, Spirit = false,
+    }
+
+    for legacyName, newName in pairs(legacyStats) do
+        local value = stats[legacyName]
+        if type(value) == "number" and value % 1 == 0 and value > baseline then
+            local invested = value - baseline
+            local kept = 0
+            if newName then
+                kept = math.min(invested, ProgressionConfig.MaxStatValue - baseline)
+                attributes[newName] += kept
+            end
+            refund += invested - kept
+        end
+        stats[legacyName] = nil
+    end
+
+    stats.Attributes = attributes
+    data.StatPoints = (data.StatPoints or 0) + refund
 end
 
 local function Migrate(data)

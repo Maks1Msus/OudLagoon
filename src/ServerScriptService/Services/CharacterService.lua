@@ -1,62 +1,28 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
-local GameConstants = require(
-    ReplicatedStorage.Shared.Constants.GameConstants
-)
+local StatRules = require(ReplicatedStorage.Shared.Progression.StatRules)
+local GameConfig = require(ReplicatedStorage.Shared.Config.GameConfig)
+local GameConstants = require(ReplicatedStorage.Shared.Constants.GameConstants)
 
 local CombatMovementService = require(script.Parent.CombatMovementService)
 
 local CharacterService = {}
 
--- Максимум маны считается из очков характеристики Mana.
-local function CalculateMaxMana(stats)
-    local manaStat = stats.Mana or GameConstants.BaseStatValue
-
-    return math.max(1, manaStat * GameConstants.ManaPerPoint)
-end
-
-local function CalculateMaxHealth(stats)
-    local vitality = stats.Vitality or GameConstants.BaseStatValue
-
-    return math.max(
-        1,
-        GameConstants.DefaultHealth
-            + (vitality - GameConstants.BaseStatValue)
-                * GameConstants.HealthPerVitality
-    )
-end
-
-local function CalculateWalkSpeed(stats)
-    local agility = stats.Agility or GameConstants.BaseStatValue
-
-    return math.clamp(
-        GameConstants.DefaultWalkSpeed
-            + (agility - GameConstants.BaseStatValue)
-                * GameConstants.SpeedPerAgility,
-        GameConstants.MinWalkSpeed,
-        GameConstants.MaxWalkSpeed
-    )
-end
-
 -- Атрибуты на Player: сервер -> клиент, только для отображения.
 -- Источник истины - профиль в DataService. Изменения атрибутов на клиенте
 -- на сервер не передаются, но читать их для логики на сервере всё равно не стоит.
 --
--- В профиле Stats.Mana - это ОЧКИ характеристики. Максимум маны в атрибуте MaxMana,
--- а атрибут Mana - это текущее значение.
--- Не лечит и не восстанавливает ману (кроме ограничения текущей маны сверху).
 function CharacterService:RefreshAttributes(player, profile)
-    local stats = profile.Stats
+    local attributes = profile.Stats.Attributes
 
-    for statName, value in pairs(stats) do
-        if statName ~= "Mana" then
-            player:SetAttribute(statName, value)
-        end
+    for name, value in pairs(attributes) do
+        player:SetAttribute(name, value)
     end
 
-    local maxMana = CalculateMaxMana(stats)
+    local maxMana = profile.Magic.ManaCapacity
 
     player:SetAttribute("MaxMana", maxMana)
+    player:SetAttribute("MaxStamina", StatRules.GetMaxStamina(attributes.Endurance))
 
     local currentMana = player:GetAttribute("Mana")
 
@@ -73,10 +39,8 @@ end
 -- НЕ восстанавливает здоровье и ману, поэтому безопасно вызывать посреди боя
 -- (например, при вложении очка характеристики).
 function CharacterService:UpdateDerivedStats(player, humanoid, profile)
-    local stats = profile.Stats
-
-    humanoid.MaxHealth = CalculateMaxHealth(stats)
-    CombatMovementService:SetBaseWalkSpeed(humanoid, CalculateWalkSpeed(stats))
+    humanoid.MaxHealth = StatRules.GetMaxHealth(profile.Stats.Attributes.Vitality)
+    humanoid.Health = math.min(humanoid.Health, humanoid.MaxHealth)
 
     self:RefreshAttributes(player, profile)
 end
@@ -84,6 +48,7 @@ end
 -- Вызывается при каждом появлении персонажа (в том числе после смерти).
 -- Здесь здоровье и мана восстанавливаются полностью.
 function CharacterService:ApplyStats(player, character, profile)
+    local deadline = os.clock() + 10
     local humanoid = character:WaitForChild("Humanoid", 10)
 
     if not humanoid then
@@ -91,12 +56,16 @@ function CharacterService:ApplyStats(player, character, profile)
         return
     end
 
-    -- Пока мы ждали, персонаж мог быть удалён
-    if character.Parent == nil then
+    -- CharacterAdded can fire before Roblox parents the new character.
+    while character.Parent == nil and player.Character == character and os.clock() < deadline do
+        task.wait()
+    end
+    if character.Parent == nil or player.Character ~= character then
         return
     end
 
     self:UpdateDerivedStats(player, humanoid, profile)
+    CombatMovementService:SetBaseWalkSpeed(humanoid, GameConstants.DefaultWalkSpeed)
 
     humanoid.Health = humanoid.MaxHealth
     player:SetAttribute("Mana", player:GetAttribute("MaxMana"))
@@ -121,7 +90,7 @@ end
 -- amount = nil восстанавливает ману полностью.
 function CharacterService:RestoreMana(player, amount)
     local maxMana = player:GetAttribute("MaxMana")
-        or (GameConstants.BaseStatValue * GameConstants.ManaPerPoint)
+        or GameConfig.StartingMagic.ManaCapacity
     local mana = player:GetAttribute("Mana") or 0
 
     if amount == nil then

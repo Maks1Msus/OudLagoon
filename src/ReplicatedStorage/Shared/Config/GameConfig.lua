@@ -6,9 +6,7 @@ local GameConfig = {}
 
 GameConfig.DataStoreName = "ReZeroMMORPG_PlayerData_v1"
 
--- Версия 2: Stats.Mana теперь хранит очки характеристики (старт 10),
--- а не максимум маны (раньше старт 100). См. Migrations в DataService.
-GameConfig.DataVersion = 2
+GameConfig.DataVersion = 3
 
 GameConfig.AutoSaveInterval = 60
 
@@ -33,13 +31,11 @@ GameConfig.StartingExperience = ProgressionConfig.StartingExperience
 GameConfig.StartingStatPoints = ProgressionConfig.StartingStatPoints
 
 GameConfig.StartingStats = {
-    Strength = 10,
-    Vitality = 10,
-    Agility = 10,
-    Intelligence = 10,
-    Mana = 10, -- очки характеристики; максимум маны = Mana * GameConstants.ManaPerPoint
-    Spirit = 10,
+    Attributes = ProgressionConfig.StartingAttributes,
 }
+
+GameConfig.StartingProficiencies = { Sword = 0, Unarmed = 0, Magic = 0 }
+GameConfig.StartingMagic = { ManaCapacity = 100, Affinities = {} }
 
 GameConfig.StartingResources = {
     Gold = 0,

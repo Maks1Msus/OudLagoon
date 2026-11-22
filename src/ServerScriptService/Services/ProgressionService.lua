@@ -3,6 +3,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ProgressionConfig = require(
     ReplicatedStorage.Shared.Config.ProgressionConfig
 )
+local StatRules = require(ReplicatedStorage.Shared.Progression.StatRules)
 
 local DataService = require(script.Parent.DataService)
 local CharacterService = require(script.Parent.CharacterService)
@@ -24,6 +25,17 @@ local function IsWholePositiveNumber(value)
         and value ~= math.huge
         and value > 0
         and value % 1 == 0
+end
+
+local function PublishAttributeChange(player, profile)
+    local character = player.Character
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    if humanoid then
+        CharacterService:UpdateDerivedStats(player, humanoid, profile)
+    else
+        CharacterService:RefreshAttributes(player, profile)
+    end
+    return PlayerService:PushProfile(player)
 end
 
 -- Начисление опыта. Вызывать только с сервера.
@@ -90,64 +102,62 @@ function ProgressionService:AllocateStatPoints(
     statName,
     amount
 )
+    if type(statName) ~= "string" or not IsWholePositiveNumber(amount) or amount > MAX_POINTS_PER_REQUEST then
+        return false
+    end
+
+    local profile = self:CommitStatAllocation(player, { [statName] = amount })
+    return profile ~= nil
+end
+
+function ProgressionService:CommitStatAllocation(player, changes)
     local profile = DataService:GetProfile(player)
-
     if not profile then
-        return false
+        return nil, "ProfileUnavailable"
     end
 
-    if type(statName) ~= "string"
-        or not ProgressionConfig.AllocatableStats[statName] then
-        return false
+    local attributes = profile.Stats.Attributes
+    local cost, reason = StatRules.GetAllocationCost(attributes, profile.StatPoints, changes)
+    if not cost then
+        return nil, reason
     end
 
-    if not IsWholePositiveNumber(amount)
-        or amount > MAX_POINTS_PER_REQUEST then
-        return false
+    -- Validate the whole draft before mutating the profile. Nothing yields between validation and debit.
+    for statName, amount in pairs(changes) do
+        attributes[statName] += amount
+    end
+    profile.StatPoints -= cost
+
+    return PublishAttributeChange(player, profile)
+end
+
+function ProgressionService:ResetAttributes(player)
+    local profile = DataService:GetProfile(player)
+    if not profile then
+        return nil, "ProfileUnavailable"
     end
 
-    local currentValue = profile.Stats[statName]
-
-    if type(currentValue) ~= "number" then
-        return false
+    local refund = StatRules.GetSpentPoints(profile.Stats.Attributes)
+    if refund == 0 then
+        return nil, "NothingToReset"
     end
 
-    if profile.StatPoints < amount then
-        return false
-    end
-
-    if currentValue + amount > ProgressionConfig.MaxStatValue then
-        return false
-    end
-
-    profile.Stats[statName] += amount
-    profile.StatPoints -= amount
-
-    -- Пересчитываем здоровье, скорость и ману БЕЗ полного восстановления:
-    -- иначе вложение очка работало бы как лечение.
-    local character = player.Character
-    local humanoid = character
-        and character:FindFirstChildOfClass("Humanoid")
-
-    if humanoid then
-        CharacterService:UpdateDerivedStats(player, humanoid, profile)
-    else
-        CharacterService:RefreshAttributes(player, profile)
-    end
-
-    PlayerService:PushProfile(player)
-
-    print(
-        "[ProgressionService] Allocated:",
-        player.Name,
-        statName,
-        amount
-    )
-
-    return true
+    profile.Stats.Attributes = table.clone(ProgressionConfig.StartingAttributes)
+    profile.StatPoints += refund
+    return PublishAttributeChange(player, profile)
 end
 
 function ProgressionService:Init()
+    RemoteService:OnFunction("CommitStatAllocation", { RateLimit = 4 }, function(player, changes)
+        local profile, reason = self:CommitStatAllocation(player, changes)
+        return { Profile = profile, Reason = reason }
+    end)
+
+    RemoteService:OnFunction("ResetAttributes", { RateLimit = 2 }, function(player)
+        local profile, reason = self:ResetAttributes(player)
+        return { Profile = profile, Reason = reason }
+    end)
+
     -- Через RemoteService: лимит частоты и проверка аргументов.
     RemoteService:OnEvent("StatAllocationRequest", {
         RateLimit = 10,

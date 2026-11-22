@@ -17,7 +17,7 @@ local Config = {
             Offset = CFrame.new(0, 0, 0), Loop = true },
         Parry = { Template = "Parry", Anchor = "Root", Duration = 0.3,
             SpinDegrees = Vector3.new(0, 0, 0), SpinDuration = 0.3,
-            OffsetA = CFrame.new(0, 0, -1.5),
+            OffsetA = CFrame.new(0, 0, -2),
             OffsetB = CFrame.Angles(0,math.rad(90),0) },
     },
     -- Confirmed Hit only, on the victim. Sword has no impact assets assigned yet.

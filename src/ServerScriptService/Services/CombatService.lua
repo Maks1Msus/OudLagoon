@@ -20,6 +20,7 @@ local CombatStates = require(
 local WeaponRegistry = require(
     ReplicatedStorage.Shared.Weapons.WeaponRegistry
 )
+local StatRules = require(ReplicatedStorage.Shared.Progression.StatRules)
 
 local DataService = require(script.Parent.DataService)
 local RemoteService = require(script.Parent.RemoteService)
@@ -137,9 +138,7 @@ end
 -- Damage = BaseDamage + Strength * Scaling (округляется, минимум 1).
 -- Округление защищает от ошибок чисел с плавающей точкой (22.9999 вместо 23).
 function CombatService:CalculateDamage(weapon, strength)
-    local damage = weapon.BaseDamage + strength * weapon.Scaling
-
-    return math.max(1, math.floor(damage + 0.5))
+    return StatRules.GetBaseDamage(weapon, strength)
 end
 
 -- КУЛДАУН ---------------------------------------------------------------
@@ -348,9 +347,8 @@ function CombatService:RunActiveWindow(attack)
 
     local ownerName = player and player.Name or character.Name
 
-    -- Сила игрока берётся из профиля, сила NPC задаётся при запуске удара
-    local strength = attack.Strength
-
+    -- Compute damage once per swing from the server's profile or the NPC's configured strength.
+    local damage
     if player then
         local profile = DataService:GetProfile(player)
 
@@ -358,17 +356,16 @@ function CombatService:RunActiveWindow(attack)
             return
         end
 
-        strength = profile.Stats.Strength
-    end
-
-    if type(strength) ~= "number" then
-        strength = GameConstants.BaseStatValue
+        damage = StatRules.GetPlayerBaseDamage(weapon, profile.Stats.Attributes,
+            profile.Proficiencies[attack.WeaponId])
+    else
+        local strength = type(attack.Strength) == "number" and attack.Strength or GameConstants.BaseStatValue
+        damage = self:CalculateDamage(weapon, strength)
     end
 
     -- Базовый урон считается один раз на удар, в момент начала Active.
     -- Итог для каждой цели (блок, парирование) определяет ApplyDamage.
     local move = attack.Move
-    local damage = self:CalculateDamage(weapon, strength)
     if move then
         damage *= move.DamageMultiplier
     end

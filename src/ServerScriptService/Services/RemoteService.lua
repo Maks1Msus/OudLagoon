@@ -26,6 +26,8 @@ local EVENT_NAMES = {
 
 local FUNCTION_NAMES = {
     "RequestProfile",     -- клиент запрашивает свой профиль после загрузки UI
+    "CommitStatAllocation",
+    "ResetAttributes",
 }
 
 -- ВАЛИДАТОРЫ ------------------------------------------------------------

@@ -162,7 +162,7 @@ end
 
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
     -- gameProcessed: клик по кнопке интерфейса или ввод в чат не должны считаться боем
-    if gameProcessed then
+    if gameProcessed or player:GetAttribute("OudLagoonMenuOpen") then
         return
     end
 
@@ -189,6 +189,12 @@ end)
 -- Окно потеряло фокус: отпускание кнопки мы не увидим, поэтому сбрасываем всё сами
 UserInputService.WindowFocusReleased:Connect(function()
     releaseBlock()
+end)
+
+player:GetAttributeChangedSignal("OudLagoonMenuOpen"):Connect(function()
+    if player:GetAttribute("OudLagoonMenuOpen") then
+        releaseBlock()
+    end
 end)
 
 -- Зажатие блока: повторяем запрос, пока сервер его не примет.

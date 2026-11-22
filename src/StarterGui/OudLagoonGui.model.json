@@ -1,0 +1,7 @@
+{
+  "ClassName": "ScreenGui",
+  "Properties": {
+    "DisplayOrder": 20,
+    "ResetOnSpawn": false
+  }
+}
