@@ -12,6 +12,8 @@ local Config = {
     Defaults = { Volume = 0.6, PlaybackSpeed = 1, RollOffMinDistance = 6,
         RollOffMaxDistance = 70, MaxDuration = 8 },
     Clips = {
+        ParryPressure = { SoundId = "" }, -- optional pressure accent on the attacker
+        PostureBreak = { SoundId = "136159508882086", PlaybackSpeed = 0.75 }, -- provisional metallic accent
         UnarmedLight1 = { SoundId = "120430503624654" },
         UnarmedLight2 = { SoundId = "120430503624654" },
         UnarmedLight3 = { SoundId = "120430503624654" },

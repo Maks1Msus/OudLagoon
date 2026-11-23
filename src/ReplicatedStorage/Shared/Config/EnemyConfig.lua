@@ -5,6 +5,7 @@ local EnemyConfig = {
     ChaseStopPadding = 0.75, -- approach inside attack range before stopping; resume beyond attack range
     Types = {
         TrainingEnemy = {
+            MaxPosture = 100, PostureRecovery = 18,
             MaxHealth = 150, DetectionRange = 35, AttackRange = 5,
             WalkSpeed = 10, Strength = 10, AttackCooldown = 1.4,
             BlockChance = 0.20, ParryChance = 0.10,

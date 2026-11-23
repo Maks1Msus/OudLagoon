@@ -32,6 +32,8 @@ local NPCCombatAnimationService = require(script.Parent.NPCCombatAnimationServic
 local DashService = require(script.Parent.DashService)
 local HitboxPose = require(ReplicatedStorage.Shared.Combat.HitboxPose)
 
+local PostureService = require(script.Parent.PostureService)
+local PostureConfig = require(ReplicatedStorage.Shared.Config.PostureConfig)
 local CombatService = {}
 
 -- [player или character NPC] = момент времени (os.clock), раньше которого следующая атака
@@ -365,6 +367,9 @@ function CombatService:RunActiveWindow(attack)
 
     -- Базовый урон считается один раз на удар, в момент начала Active.
     -- Итог для каждой цели (блок, парирование) определяет ApplyDamage.
+    local _, moveId = CombatStateService:GetAttackIdentity(character)
+    moveId = moveId or "Light1"
+    local pressureMove = attack.Move or WeaponComboConfig.GetMove(attack.WeaponId, moveId)
     local move = attack.Move
     if move then
         damage *= move.DamageMultiplier
@@ -451,24 +456,33 @@ function CombatService:RunActiveWindow(attack)
                 -- Успешное парирование оглушает атакующего.
                 -- Визуальная реакция Parried отправляется отдельно и не зависит
                 -- от того, является атакующий игроком или NPC.
+                if outcome.Result == CombatStates.DamageResults.Blocked and pressureMove then
+                    PostureService:AddPosture(target.Model, pressureMove.PostureDamage, {
+                        Source = character, Reason = "BlockedAttack", AttackId = attackId,
+                        WeaponId = attack.WeaponId, MoveId = moveId,
+                    })
+                end
                 if outcome.Result == CombatStates.DamageResults.Parried then
                     if attack.TracksCombo then
                         ComboService:Reset(character, "Parried")
                         attack.TracksCombo = false
                     end
 
-                    CombatStateService:ApplyStun(
-                        character,
-                        CombatStateConfig.Stun.ParryDuration,
-                        "Parry"
-                    )
+                    PostureService:ReducePosture(target.Model, PostureConfig.Parry.DefenderRecovery, "SuccessfulParry")
+                    local pressure = PostureService:AddPosture(character, PostureConfig.Parry.AttackerPostureDamage, {
+                        Source = target.Model, Reason = "Parried", AttackId = attackId,
+                        WeaponId = attack.WeaponId, MoveId = moveId,
+                    })
+                    if not pressure.Broke then
+                        CombatStateService:ApplyStun(character, CombatStateConfig.Stun.ParryDuration, "Parry")
+                    end
 
-                    if player then
+                    if player and not pressure.Broke then
                         feedback:FireClient(player, {
                             Kind = "Reaction",
                             Reaction = "Parried",
                         })
-                    else
+                    elseif not pressure.Broke then
                         -- Атакует NPC: реакцию Parried проигрывает его Animator на сервере
                         NPCCombatAnimationService:PlayReaction(character, "Parried")
                     end

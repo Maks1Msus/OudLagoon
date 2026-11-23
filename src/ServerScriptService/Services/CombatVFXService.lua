@@ -11,6 +11,7 @@ local RemoteService = require(script.Parent.RemoteService)
 
 local Directions = require(ReplicatedStorage.Shared.Combat.DodgeDirections)
 
+local PostureService = require(script.Parent.PostureService)
 local CombatVFXService = {}
 local initialized = false
 local Attributes = Config.Attributes
@@ -73,6 +74,9 @@ function CombatVFXService:Init()
         return
     end
 
+    PostureService:OnBroken(function(character)
+        Broadcast(character, { Result = "PostureBreak" })
+    end)
     CombatStateService:OnStateChanged(function(character, state, oldState)
         Publish(character)
         if oldState == CombatStates.Dodging and state ~= CombatStates.Dodging then

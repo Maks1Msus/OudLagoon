@@ -4,6 +4,7 @@ local StatRules = require(ReplicatedStorage.Shared.Progression.StatRules)
 local GameConfig = require(ReplicatedStorage.Shared.Config.GameConfig)
 local GameConstants = require(ReplicatedStorage.Shared.Constants.GameConstants)
 
+local PostureService = require(script.Parent.PostureService)
 local CombatMovementService = require(script.Parent.CombatMovementService)
 
 local CharacterService = {}
@@ -22,7 +23,6 @@ function CharacterService:RefreshAttributes(player, profile)
     local maxMana = profile.Magic.ManaCapacity
 
     player:SetAttribute("MaxMana", maxMana)
-    player:SetAttribute("MaxStamina", StatRules.GetMaxStamina(attributes.Endurance))
 
     local currentMana = player:GetAttribute("Mana")
 
@@ -42,6 +42,8 @@ function CharacterService:UpdateDerivedStats(player, humanoid, profile)
     humanoid.MaxHealth = StatRules.GetMaxHealth(profile.Stats.Attributes.Vitality)
     humanoid.Health = math.min(humanoid.Health, humanoid.MaxHealth)
 
+    local endurance = profile.Stats.Attributes.Endurance
+    PostureService:Configure(humanoid.Parent, StatRules.GetMaxPosture(endurance), StatRules.GetPostureRecovery(endurance))
     self:RefreshAttributes(player, profile)
 end
 

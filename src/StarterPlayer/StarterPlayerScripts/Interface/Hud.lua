@@ -1,3 +1,4 @@
+local PostureUI = require(game:GetService("ReplicatedStorage").Shared.Config.PostureConfig).UI
 local Theme = require(script.Parent.Theme)
 local Colors = Theme.Colors
 local px = UDim2.fromOffset
@@ -13,6 +14,10 @@ local function createMeter(parent, name, y, color)
 
     return function(current, maximum)
         local ratio = maximum > 0 and math.clamp(current / maximum, 0, 1) or 0
+        if name == "Posture" then
+            fill.BackgroundColor3 = ratio >= PostureUI.CriticalThreshold and Colors.Health
+                or ratio >= PostureUI.HighThreshold and Color3.fromRGB(239, 165, 68) or color
+        end
         fill.Size = UDim2.fromScale(ratio, 1)
         label.Text = maximum > 0 and string.format("%s   %d / %d",
             name, math.round(current), math.round(maximum)) or name .. "   —"
@@ -20,7 +25,7 @@ local function createMeter(parent, name, y, color)
 end
 
 function Hud.new(parent, toggle)
-    local status = Theme.frame(parent, "Vitals", UDim2.new(0, 24, 1, -24), px(232, 44))
+    local status = Theme.frame(parent, "Vitals", UDim2.new(0, 24, 1, -24), px(232, 68))
     status.AnchorPoint = Vector2.new(0, 1)
 
     local button = Theme.button(parent, "OpenCharacter", "Character  [B]",
@@ -32,7 +37,8 @@ function Hud.new(parent, toggle)
         Status = status,
         OpenButton = button,
         Health = createMeter(status, "Health", 0, Colors.Health),
-        Mana = createMeter(status, "Mana", 24, Colors.Mana),
+        Posture = createMeter(status, "Posture", 24, Colors.Accent),
+        Mana = createMeter(status, "Mana", 48, Colors.Mana),
     }
 end
 

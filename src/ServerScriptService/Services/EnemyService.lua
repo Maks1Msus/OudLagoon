@@ -7,6 +7,7 @@ local CombatMovementService = require(script.Parent.CombatMovementService)
 local NPCCombatAnimationService = require(script.Parent.NPCCombatAnimationService)
 local EnemyCombatService = require(script.Parent.EnemyCombatService)
 
+local PostureService = require(script.Parent.PostureService)
 local EnemyService = {}
 local initialized = false
 local slots = {}
@@ -101,8 +102,10 @@ local function SpawnSlot(slot)
     end)
     CombatStateService:ResetCharacter(model)
     CombatMovementService:SetBaseWalkSpeed(humanoid, settings.WalkSpeed)
+    PostureService:RegisterCharacter(model, { Max = settings.MaxPosture, RecoveryPerSecond = settings.PostureRecovery })
     model.Parent = folder
     pcall(function() root:SetNetworkOwner(nil) end)
+    game:GetService("CollectionService"):AddTag(model, "PostureNPC")
     NPCCombatAnimationService:Register(model)
     EnemyCombatService:Register(model, settings, slot.Home)
     return model

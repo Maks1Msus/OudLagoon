@@ -10,6 +10,7 @@ local ProgressionService = require(
     Services.ProgressionService
 )
 local CombatStateService = require(Services.CombatStateService)
+local PostureService = require(Services.PostureService)
 local RagdollService = require(Services.RagdollService)
 local CombatMovementService = require(Services.CombatMovementService)
 local DashService = require(Services.DashService)
@@ -31,6 +32,7 @@ PlayerService:Init()
 ProgressionService:Init()
 
 CombatStateService:Init()
+PostureService:Init()
 CombatMovementService:Init()
 RagdollService:Init()
 DashService:Init()

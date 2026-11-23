@@ -257,6 +257,41 @@ StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Health, false)
 menu.Overlay.ZIndex = 3
 player:SetAttribute(OPEN_ATTRIBUTE, false)
 
+local collection = game:GetService("CollectionService")
+local npcBars = {}
+local function addNpcBar(model)
+    if npcBars[model] or not model:IsA("Model") then return end
+    local bar = Instance.new("BillboardGui")
+    bar.Name = "PostureMeter"
+    bar.Size = UDim2.fromOffset(90, 6)
+    bar.StudsOffsetWorldSpace = Vector3.new(0, 2.5, 0)
+    bar.MaxDistance = 45
+    bar.Parent = screen
+    local track = Theme.frame(bar, "Track", UDim2.fromScale(0, 0), UDim2.fromScale(1, 1), Theme.Colors.Surface)
+    local fill = Theme.frame(track, "Posture", UDim2.fromScale(0, 0), UDim2.fromScale(0, 1), Theme.Colors.Accent)
+    local function refresh()
+        local maximum = model:GetAttribute("CombatMaxPosture") or 0
+        local value = model:GetAttribute("CombatPosture") or 0
+        bar.Adornee = model:FindFirstChild("Head") or model:FindFirstChild("HumanoidRootPart")
+        bar.Enabled = bar.Adornee ~= nil and value > 0 and maximum > 0
+        fill.Size = UDim2.fromScale(math.clamp(value / math.max(1, maximum), 0, 1), 1)
+    end
+    npcBars[model] = { Bar = bar, model:GetAttributeChangedSignal("CombatPosture"):Connect(refresh),
+        model:GetAttributeChangedSignal("CombatMaxPosture"):Connect(refresh),
+        model.ChildAdded:Connect(refresh), model.ChildRemoved:Connect(refresh) }
+    refresh()
+end
+collection:GetInstanceAddedSignal("PostureNPC"):Connect(addNpcBar)
+collection:GetInstanceRemovedSignal("PostureNPC"):Connect(function(model)
+    local entry = npcBars[model]
+    if entry then
+        for _, connection in ipairs(entry) do connection:Disconnect() end
+        entry.Bar:Destroy()
+        npcBars[model] = nil
+    end
+end)
+for _, model in ipairs(collection:GetTagged("PostureNPC")) do addNpcBar(model) end
+
 local characterConnections = {}
 local healthConnections = {}
 local function disconnectAll(connections)
@@ -270,6 +305,7 @@ local function bindCharacter(character)
     disconnectAll(characterConnections)
     disconnectAll(healthConnections)
     hud.Health(0, 0)
+    hud.Posture(0, 0)
     if menu.Overlay.Visible then
         menu.Preview:setCharacter(character)
         render()
@@ -277,6 +313,14 @@ local function bindCharacter(character)
     if not character then
         return
     end
+
+    local function refreshPosture()
+        hud.Posture(character:GetAttribute("CombatPosture") or 0, character:GetAttribute("CombatMaxPosture") or 0)
+    end
+    for _, key in ipairs({ "CombatPosture", "CombatMaxPosture" }) do
+        table.insert(characterConnections, character:GetAttributeChangedSignal(key):Connect(refreshPosture))
+    end
+    refreshPosture()
 
     local function bindHealth()
         disconnectAll(healthConnections)

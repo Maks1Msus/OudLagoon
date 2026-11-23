@@ -57,6 +57,7 @@ CombatAnimationConfig.Slots = {
     -- Парирование (защищающийся). Должно быть выше BlockHit и блока.
     Parry = { Priority = Enum.AnimationPriority.Action4, Looped = false },
 
+    PostureBreak = { Priority = Enum.AnimationPriority.Action4, Looped = false },
     Parried = { Priority = Enum.AnimationPriority.Action4, Looped = false },
 
     Hit1 = { Priority = Enum.AnimationPriority.Action3, Looped = false },
@@ -108,6 +109,7 @@ CombatAnimationConfig.Common = {
     Hit2 = "rbxassetid://132558804486644",
     
 
+    PostureBreak = "rbxassetid://114102162645423", -- reuse stagger until a dedicated clip is authored
     Parried = "rbxassetid://114102162645423",
     Stunned = "rbxassetid://86159934712814",
     Dodge = "rbxassetid://0", -- optional fallback for all directions
@@ -229,7 +231,7 @@ function CombatAnimationConfig.PickHitSlot(weaponId, lastSlot, random)
 end
 
 function CombatAnimationConfig.IsStunSlot(slot)
-    return slot == "Parried" or slot == "Stunned"
+    return slot == "PostureBreak" or slot == "Parried" or slot == "Stunned"
         or table.find(CombatAnimationConfig.HitSlots, slot) ~= nil
 end
 
@@ -237,14 +239,14 @@ function CombatAnimationConfig.GetStunSlot(source, weaponId, lastHitSlot)
     if source == "Hit" then
         return CombatAnimationConfig.PickHitSlot(weaponId, lastHitSlot)
     end
-    local slot = source == "Parry" and "Parried" or "Stunned"
+    local slot = source == "PostureBreak" and "PostureBreak" or source == "Parry" and "Parried" or "Stunned"
     return CombatAnimationConfig.GetAnimationId(slot, weaponId) and slot or nil
 end
 
 -- Слоты, которые использует код боевых анимаций (клиент игрока и NPC).
 CombatAnimationConfig.RequiredSlots = {
     "Attack", "Light1", "Light2", "Light3", "DashLight", "BlockStart", "BlockLoop", "BlockHit", "Parry", "Parried",
-    "Hit1", "Hit2", "Hit3", "Stunned", "DashForward", "DashBackward", "DashLeft", "DashRight", "Dodge", "DodgeForward", "DodgeBackward", "DodgeLeft", "DodgeRight", "UnarmedIdle"
+    "Hit1", "Hit2", "Hit3", "PostureBreak", "Stunned", "DashForward", "DashBackward", "DashLeft", "DashRight", "Dodge", "DodgeForward", "DodgeBackward", "DodgeLeft", "DodgeRight", "UnarmedIdle"
 }
 
 -- Проверка согласованности конфигурации. Возвращает список проблем (пустой = всё в порядке).

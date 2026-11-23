@@ -238,6 +238,30 @@ local function UpdateCharacter(character, entry, now, deltaTime)
     end
 end
 
+local function playBreakBurst(root, color)
+    local tweenService = game:GetService("TweenService")
+    local origin = root.Position
+    local info = TweenInfo.new(0.32, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+    -- An expanding circle of bright guard fragments on the horizontal plane.
+    for i = 1, 12 do
+        local angle = (i - 1) * math.pi / 6
+        local radial = Vector3.new(math.cos(angle), 0, math.sin(angle))
+        local shard = Instance.new("Part")
+        shard.Name = "PostureBreakFragment"
+        shard.Anchored = true
+        shard.CanCollide, shard.CanQuery, shard.CanTouch = false, false, false
+        shard.Material = Enum.Material.Neon
+        shard.Color = i % 2 == 0 and color or Color3.new(1, 1, 1)
+        shard.Size = Vector3.new(0.65, 0.12, 0.12)
+        shard.CFrame = CFrame.lookAt(origin + radial, origin)
+        shard.Parent = folder
+        tweenService:Create(shard, info, {
+            Position = origin + radial * 3 + Vector3.new(0, i % 3 * 0.2, 0), Transparency = 1,
+        }):Play()
+        Debris:AddItem(shard, 0.35)
+    end
+end
+
 local function PlayReaction(payload)
     if type(payload) ~= "table" or typeof(payload.Target) ~= "Instance"
         or not payload.Target:IsA("Model") or not payload.Target.Parent
@@ -252,6 +276,8 @@ local function PlayReaction(payload)
     if not root or not settings or not IsNear(root.Position) then
         return
     end
+
+    if payload.Result == "PostureBreak" then playBreakBurst(root, settings.Color) end
 
     -- A reaction can arrive before the replicated state tag, or survive its removal.
     local entry = entries[character]

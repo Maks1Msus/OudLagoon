@@ -726,7 +726,7 @@ function CombatStateService:ApplyStun(character, duration, source)
     local now = os.clock()
 
     -- A successful parry must interrupt the attacker even during post-hit immunity.
-    if now < record.StunImmuneUntil and source ~= "Parry" then
+    if now < record.StunImmuneUntil and source ~= "Parry" and source ~= "PostureBreak" then
         return false, "StunImmune"
     end
 

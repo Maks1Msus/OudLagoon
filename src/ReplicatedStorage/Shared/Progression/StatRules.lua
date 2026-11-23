@@ -2,6 +2,8 @@ local Shared = script.Parent.Parent
 local ProgressionConfig = require(Shared.Config.ProgressionConfig)
 local GameConstants = require(Shared.Constants.GameConstants)
 
+local PostureConfig = require(Shared.Config.PostureConfig)
+
 local StatRules = {}
 
 function StatRules.GetAllocationCost(stats, availablePoints, changes)
@@ -59,9 +61,13 @@ function StatRules.GetMaxHealth(vitality)
         + GetAttributeBonus(vitality) * GameConstants.HealthPerEffectiveVitality)
 end
 
-function StatRules.GetMaxStamina(endurance)
-    return math.round(GameConstants.DefaultStamina
-        + GetAttributeBonus(endurance) * GameConstants.StaminaPerEffectiveEndurance)
+function StatRules.GetMaxPosture(endurance)
+    return math.round(GameConstants.DefaultPosture
+        + GetAttributeBonus(endurance) * GameConstants.PosturePerEffectiveEndurance)
+end
+
+function StatRules.GetPostureRecovery(endurance)
+    return PostureConfig.Recovery.BasePerSecond + GetAttributeBonus(endurance) * GameConstants.PostureRecoveryPerEffectiveEndurance
 end
 
 function StatRules.GetSpentPoints(attributes)

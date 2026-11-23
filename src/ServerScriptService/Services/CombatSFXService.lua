@@ -6,6 +6,7 @@ local States = require(ReplicatedStorage.Shared.Constants.CombatStates)
 local WeaponRegistry = require(ReplicatedStorage.Shared.Weapons.WeaponRegistry)
 local CombatStateService = require(script.Parent.CombatStateService)
 local RemoteService = require(script.Parent.RemoteService)
+local PostureService = require(script.Parent.PostureService)
 local Service = {}
 local initialized = false
 local sequence = 0
@@ -32,10 +33,18 @@ function Service:Init()
     Config.Validate()
     initialized = true
     if not Config.Enabled then return end
+    PostureService:OnChanged(function(character, value, _, reason)
+        if reason == "Parried" and value > 0 then Play(character, "ParryPressure") end
+    end)
+    PostureService:OnBroken(function(character) Play(character, "PostureBreak") end)
     CombatStateService:OnStateChanged(function(character, state, oldState)
         -- Attacking -> Attacking is a combo link, not another state-entry sound.
         if state == oldState then return end
         if oldState == States.Blocking and state == States.Idle then Play(character, "BlockEnd") end
+        if state == States.Stunned then
+            local stun = CombatStateService:GetStunAnimationState(character)
+            if stun and stun.Source == "PostureBreak" then return end
+        end
         local dodge = state == States.Dodging and CombatStateService:GetDodgeAnimationState(character)
         Play(character, Config.States[state], dodge and { DashRequestId = dodge.RequestId, DodgeId = dodge.Id })
     end)

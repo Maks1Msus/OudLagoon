@@ -62,10 +62,9 @@ end
 function Pages.derived(parent)
     Pages.heading(parent, "Total Stats")
     local health = row(parent, "Max Health", 59)
-    local stamina = row(parent, "Stamina Capacity", 112)
+    local posture = row(parent, "Max Posture", 112)
     local damage = row(parent, "Base Attack Damage", 165)
-    local guard = row(parent, "Guard Strength", 218)
-    caption(parent, "Stamina spending and guard scaling are pending integration.", 266)
+    local recovery = row(parent, "Posture Recovery / s", 218)
 
     Pages.heading(parent, "Magic", 301)
     local mana = row(parent, "Mana Capacity", 358)
@@ -81,12 +80,13 @@ function Pages.derived(parent)
         local proficiency = profile.Proficiencies[state.WeaponId]
         health.Text = previewNumber(StatRules.GetMaxHealth(current.Vitality),
             StatRules.GetMaxHealth(proposed.Vitality))
-        stamina.Text = previewNumber(StatRules.GetMaxStamina(current.Endurance),
-            StatRules.GetMaxStamina(proposed.Endurance))
+        posture.Text = previewNumber(StatRules.GetMaxPosture(current.Endurance),
+            StatRules.GetMaxPosture(proposed.Endurance))
         damage.Text = state.Weapon.DisplayName .. " · " .. previewNumber(
             StatRules.GetPlayerBaseDamage(state.Weapon, current, proficiency),
             StatRules.GetPlayerBaseDamage(state.Weapon, proposed, proficiency))
-        guard.Text = "Pending"
+        recovery.Text = previewNumber(string.format("%.2f", StatRules.GetPostureRecovery(current.Endurance)),
+            string.format("%.2f", StatRules.GetPostureRecovery(proposed.Endurance)))
         mana.Text = tostring(profile.Magic.ManaCapacity)
         throughput.Text = profile.Magic.GateThroughput and tostring(profile.Magic.GateThroughput) or "Not configured"
         stability.Text = profile.Magic.GateStability and tostring(profile.Magic.GateStability) or "Not configured"

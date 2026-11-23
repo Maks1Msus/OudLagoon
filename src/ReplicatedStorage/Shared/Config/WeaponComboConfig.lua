@@ -36,6 +36,7 @@ WeaponComboConfig.Weapons = {
 
         Moves = {
             DashLight = {
+                PostureDamage = 20,
                 Index = 1, AlternativeStart = true, Next = "Light2",
                 Startup = 0.10, Active = 0.12,
                 RecoveryOnHit = 0.20, RecoveryOnMiss = 0.40,
@@ -43,6 +44,7 @@ WeaponComboConfig.Weapons = {
                 ParryInterrupt = false,
             },
             Light1 = {
+                PostureDamage = 20,
                 Index = 1,
                 Next = "Light2",
 
@@ -59,6 +61,7 @@ WeaponComboConfig.Weapons = {
             },
 
             Light2 = {
+                PostureDamage = 20,
                 Index = 2,
                 Next = "Light3",
 
@@ -75,6 +78,7 @@ WeaponComboConfig.Weapons = {
             },
 
             Light3 = {
+                PostureDamage = 20,
                 Index = 3,
                 Next = nil,
 
@@ -100,6 +104,7 @@ WeaponComboConfig.Weapons = {
 
         Moves = {
             DashLight = {
+                PostureDamage = 13,
                 Index = 1, AlternativeStart = true, Next = "Light2",
                 Startup = 0.10, Active = 0.12,
                 RecoveryOnHit = 0.20, RecoveryOnMiss = 0.40,
@@ -107,6 +112,7 @@ WeaponComboConfig.Weapons = {
                 ParryInterrupt = false,
             },
             Light1 = {
+                PostureDamage = 33,
                 Index = 1,
                 Next = "Light2",
 
@@ -123,6 +129,7 @@ WeaponComboConfig.Weapons = {
             },
 
             Light2 = {
+                PostureDamage = 33,
                 Index = 2,
                 Next = "Light3",
 
@@ -142,6 +149,7 @@ WeaponComboConfig.Weapons = {
             },
 
             Light3 = {
+                PostureDamage = 33,
                 Index = 3,
                 Next = nil,
 
@@ -348,6 +356,7 @@ function WeaponComboConfig.Validate()
                 )
             )
 
+            assert(IsFiniteNumber(move.PostureDamage) and move.PostureDamage >= 0, "Invalid move PostureDamage")
             if move.Finisher then
                 assert(move.Next == nil and move.Index == weapon.MaxChain,
                     "Finisher must be the final combo move")

@@ -9,8 +9,9 @@ GameConstants.DefaultWalkSpeed = 16
 -- Значение характеристики, при котором бонусы равны нулю (стартовые 10).
 GameConstants.BaseStatValue = 10
 
-GameConstants.DefaultStamina = 100
+GameConstants.DefaultPosture = 100
 GameConstants.HealthPerEffectiveVitality = 1.25
-GameConstants.StaminaPerEffectiveEndurance = 2
+GameConstants.PosturePerEffectiveEndurance = 0.5
+GameConstants.PostureRecoveryPerEffectiveEndurance = 0.10
 
 return GameConstants

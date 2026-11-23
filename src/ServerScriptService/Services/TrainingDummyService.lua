@@ -20,6 +20,7 @@ local CombatService = require(script.Parent.CombatService)
 local CombatStateService = require(script.Parent.CombatStateService)
 local NPCCombatAnimationService = require(script.Parent.NPCCombatAnimationService)
 
+local PostureService = require(script.Parent.PostureService)
 local TrainingDummyService = {}
 
 local MAX_DUMMIES = 5
@@ -334,6 +335,9 @@ function TrainingDummyService:SpawnForPlayer(player, mode)
     -- Сначала задаём позицию, затем помещаем модель в Workspace.
     model:PivotTo(spawnCFrame)
     model.PrimaryPart = root
+    local postureProfile = modeConfig.PostureProfile or "NormalPosture"
+    model:SetAttribute("PostureProfile", postureProfile)
+    PostureService:RegisterCharacter(model, TrainingDummyConfig.PostureProfiles[postureProfile])
     model.Parent = dummyFolder
 
     -- Сервер остаётся владельцем физики NPC.
@@ -342,6 +346,7 @@ function TrainingDummyService:SpawnForPlayer(player, mode)
     end)
 
     -- Анимации NPC (блок, реакции) и боевое состояние манекена
+    game:GetService("CollectionService"):AddTag(model, "PostureNPC")
     NPCCombatAnimationService:Register(model)
 
     humanoid.Died:Connect(function()
@@ -352,7 +357,7 @@ function TrainingDummyService:SpawnForPlayer(player, mode)
         Debris:AddItem(model, CORPSE_LIFETIME)
     end)
 
-    local behavior = BEHAVIORS[mode]
+    local behavior = BEHAVIORS[modeConfig.Behavior or mode]
 
     if behavior then
         behavior(model, humanoid, modeConfig)

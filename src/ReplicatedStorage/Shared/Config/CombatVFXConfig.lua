@@ -19,6 +19,7 @@ local CombatVFXConfig = {
     },
 
     Reactions = {
+        PostureBreak = { Color = Color3.fromRGB(225, 193, 255), Duration = 0.36, Priority = 4 },
         Hit = {
             Color = Color3.fromRGB(224, 104, 94),
             Duration = 0.18,

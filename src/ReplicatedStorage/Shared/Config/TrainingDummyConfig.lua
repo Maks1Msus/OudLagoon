@@ -26,11 +26,20 @@ local TrainingDummyConfig = {}
 
 TrainingDummyConfig.DefaultMode = "Passive"
 
+TrainingDummyConfig.PostureProfiles = {
+    NormalPosture = { Max = 100 }, InfinitePosture = { Max = 100, Infinite = true }, LowPosture = { Max = 30 },
+}
+
 TrainingDummyConfig.Modes = {
     Passive = {
+        PostureProfile = "InfinitePosture",
         DisplayName = "Training Dummy",
     },
 
+    LowPosture = {
+        DisplayName = "Training Dummy (Low Posture)", Behavior = "Blocking", PostureProfile = "LowPosture",
+        IdleTime = { Min = 0.5, Max = 0.8 }, HoldTime = { Min = 6, Max = 8 },
+    },
     Blocking = {
         DisplayName = "Training Dummy (Blocking)",
         IdleTime = { Min = 1.0, Max = 2.0 },

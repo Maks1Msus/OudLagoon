@@ -31,9 +31,9 @@ local function attributeEffect(statName, state)
         current = StatRules.GetMaxHealth(attributes.Vitality)
         proposed = StatRules.GetMaxHealth(attributes.Vitality + bonus)
     elseif statName == "Endurance" then
-        name = "Stamina capacity"
-        current = StatRules.GetMaxStamina(attributes.Endurance)
-        proposed = StatRules.GetMaxStamina(attributes.Endurance + bonus)
+        name = "Max posture"
+        current = StatRules.GetMaxPosture(attributes.Endurance)
+        proposed = StatRules.GetMaxPosture(attributes.Endurance + bonus)
     else
         local proficiency = state.Profile.Proficiencies[state.WeaponId]
         local preview = table.clone(attributes)

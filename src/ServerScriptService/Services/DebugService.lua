@@ -89,6 +89,10 @@ function Actions.SpawnDummy(player)
 end
 
 -- Манекен, который периодически поднимает блок (проверка блока и парирования).
+function Actions.SpawnLowPostureDummy(player)
+    TrainingDummyService:SpawnForPlayer(player, "LowPosture")
+end
+
 function Actions.SpawnBlockingDummy(player)
     TrainingDummyService:SpawnForPlayer(player, "Blocking")
 end

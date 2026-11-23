@@ -26,6 +26,7 @@ CombatStateConfig.Stun = {
 
     LightHitDuration = 0.20,
     HeavyHitDuration = 0.45,
+    PostureBreakDuration = 1.0,
     ParryDuration = 0.75,
     AbilityDuration = 0.80,
 
