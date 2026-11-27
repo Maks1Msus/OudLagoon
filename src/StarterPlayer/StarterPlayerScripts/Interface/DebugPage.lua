@@ -23,6 +23,7 @@ local sections = {
     },
     {
         Name = "Training Dummies",
+        { "Spawn Heavy Dummy", "SpawnHeavyDummy" },
         { "Low Posture Dummy", "SpawnLowPostureDummy" },
         { "Spawn R6 Dummy", "SpawnDummy" },
         { "Spawn Blocking Dummy", "SpawnBlockingDummy" },

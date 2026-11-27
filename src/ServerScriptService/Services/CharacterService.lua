@@ -7,6 +7,7 @@ local GameConstants = require(ReplicatedStorage.Shared.Constants.GameConstants)
 local PostureService = require(script.Parent.PostureService)
 local CombatMovementService = require(script.Parent.CombatMovementService)
 
+local GateService = require(script.Parent.GateService)
 local CharacterService = {}
 
 -- Атрибуты на Player: сервер -> клиент, только для отображения.
@@ -66,6 +67,7 @@ function CharacterService:ApplyStats(player, character, profile)
         return
     end
 
+    GateService:Register(character, profile.Magic.GateStability)
     self:UpdateDerivedStats(player, humanoid, profile)
     CombatMovementService:SetBaseWalkSpeed(humanoid, GameConstants.DefaultWalkSpeed)
 

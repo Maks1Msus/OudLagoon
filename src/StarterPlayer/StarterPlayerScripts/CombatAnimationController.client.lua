@@ -463,7 +463,7 @@ local function applyStunReaction(snapshot, weaponId)
         animatedStunRevision = snapshot.Revision
         stopReaction(0)
         local slot = CombatAnimationConfig.GetStunSlot(snapshot.Source, weaponId, lastHitSlot)
-        if snapshot.Source == "Hit" and slot then
+        if (snapshot.Source == "Hit" or snapshot.Source == "HeavyHit") and slot then
             lastHitSlot = slot
         end
         if not slot or not playSlot(slot, weaponId) then
@@ -480,13 +480,14 @@ end
 -- СОСТОЯНИЕ ОТ СЕРВЕРА ---------------------------------------------------
 
 -- restoring = true: это снимок состояния (Sync или отложенное сообщение), а не переход.
+local animatedCastId
 local function applyState(payload, restoring)
     local state = payload.State
     local elapsed = type(payload.Elapsed) == "number" and math.max(payload.Elapsed, 0) or 0
-    local weaponId = getWeaponId()
+    local weaponId = payload.AttackAnimation and payload.AttackAnimation.WeaponId or getWeaponId()
 
     if activeTrack and (
-        (CombatAnimationConfig.IsAttackSlot(activeSlot) and state ~= CombatStates.Attacking)
+        (CombatAnimationConfig.IsAttackSlot(activeSlot) and state ~= CombatStates.Attacking and not payload.AbilityAnimation)
         or (CombatAnimationConfig.IsStunSlot(activeSlot) and state ~= CombatStates.Stunned)
         or (BLOCK_SLOTS[activeSlot] and state ~= CombatStates.Blocking)
         or (CombatAnimationConfig.IsDodgeSlot(activeSlot) and state ~= CombatStates.Dodging)
@@ -497,7 +498,18 @@ local function applyState(payload, restoring)
         stopReaction(0.05)
     end
 
-    if state == CombatStates.Attacking then
+    if state == CombatStates.UsingAbility then
+        local snapshot = payload.AbilityAnimation
+        if snapshot then
+            if animatedCastId ~= snapshot.AttackId then
+                animatedCastId = snapshot.AttackId
+                playSlot(snapshot.Slot, weaponId)
+            end
+            if activeTrack and activeSlot == snapshot.Slot then AttackAnimationSync.Update(activeTrack, snapshot) end
+        elseif activeTrack then
+            stopActive(0.05)
+        end
+    elseif state == CombatStates.Attacking then
         if payload.AttackId ~= nil and payload.AttackId ~= animatedAttackId then
             animatedAttackId = payload.AttackId
             unarmedIdleToken += 1
@@ -613,7 +625,7 @@ local function onFeedback(payload)
             end)
         end
 
-    elseif payload.Result == DamageResults.Blocked then
+    elseif payload.Result == DamageResults.Blocked and not payload.PostureBroken then
         if currentState == CombatStates.Blocking then
             playReaction(SLOT_BLOCK_HIT, weaponId)
         end

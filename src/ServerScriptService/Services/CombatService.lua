@@ -40,6 +40,8 @@ local CombatService = {}
 -- запрещена. Ключ - Player для игрока и Model для NPC; слабые ключи не копят удалённых NPC.
 local NextAttackAt = setmetatable({}, { __mode = "k" })
 
+local NextHeavyAt = setmetatable({}, { __mode = "k" })
+
 -- [character] = данные текущего удара, пока он не завершился:
 -- { AttackId, Player (nil у NPC), Character, WeaponId, Weapon, Strength (только NPC), TracksCombo }
 local Attacks = setmetatable({}, { __mode = "k" })
@@ -261,6 +263,68 @@ local function IsPvPAllowed(attacker, model)
     return targetPlayer ~= attacker and CombatConfig.PvPEnabled
 end
 
+local function ApplyParry(character, player, target, attackId, weaponId, moveId, feedback)
+    PostureService:ReducePosture(target, PostureConfig.Parry.DefenderRecovery, "SuccessfulParry")
+    local pressure = PostureService:AddPosture(character, PostureConfig.Parry.AttackerPostureDamage, {
+        Source = target, Reason = "Parried", AttackId = attackId,
+        WeaponId = weaponId, MoveId = moveId,
+    })
+    if not pressure.Broke then
+        CombatStateService:ApplyStun(character, CombatStateConfig.Stun.ParryDuration, "Parry")
+    end
+
+    if player and not pressure.Broke then
+        feedback:FireClient(player, {
+            Kind = "Reaction",
+            Reaction = "Parried",
+        })
+    elseif not pressure.Broke then
+        -- Атакует NPC: реакцию Parried проигрывает его Animator на сервере
+        NPCCombatAnimationService:PlayReaction(character, "Parried")
+    end
+end
+
+-- A released spell retains its original owner and source even if the caster respawns.
+function CombatService:ApplyAbilityEffect(context, target, origin)
+    local effect = context.Combat
+    if target == context.Caster then
+        if effect.Restore then
+            local humanoid = target:FindFirstChildOfClass("Humanoid")
+            if humanoid and humanoid.Health > 0 then
+                humanoid.Health = math.min(humanoid.MaxHealth, humanoid.Health + effect.Damage)
+                PostureService:ReducePosture(target, effect.PostureDamage, "SecondWind")
+            end
+        end
+        return
+    end
+    if not IsPvPAllowed(context.Player, target) then return end
+    local outcome = CombatStateService:ApplyDamage(target, effect.Damage, origin, context.Caster, nil, function()
+        return PostureService:AddPosture(target, effect.PostureDamage, {
+            Source = context.Caster, Reason = "BlockedAbility", MoveId = context.AbilityId,
+        }).Broke
+    end)
+    local feedback = RemoteService:GetEvent("CombatFeedback")
+    if outcome.Result == CombatStates.DamageResults.Hit and outcome.Damage > 0 then
+        CombatStateService:ApplyStun(target, effect.HitStun, "Ability")
+    elseif outcome.Result == CombatStates.DamageResults.Parried then
+        if effect.ParryCaster then
+            ApplyParry(context.Caster, context.Player, target, context.CastId, context.WeaponId, context.AbilityId, feedback)
+        else
+            PostureService:ReducePosture(target, PostureConfig.Parry.DefenderRecovery, "SuccessfulParry")
+        end
+    end
+    if outcome.Result == CombatStates.DamageResults.Ignored then return end
+    if context.Player and context.Player.Parent == Players then
+        feedback:FireClient(context.Player, { Kind = "Hit", Target = target, Result = outcome.Result,
+            Damage = outcome.Damage, PostureBroken = outcome.PostureBroken })
+    end
+    local victim = Players:GetPlayerFromCharacter(target)
+    if victim then
+        feedback:FireClient(victim, { Kind = "Received", Result = outcome.Result,
+            Damage = outcome.Damage, PostureBroken = outcome.PostureBroken })
+    end
+end
+
 -- Область удара использует серверный root с ограниченным прогнозом XZ-позиции атакующего.
 -- Клиент не присылает ни цели, ни координаты.
 -- attacker - Player атакующего либо nil, если бьёт NPC (character всё равно передаётся).
@@ -273,6 +337,7 @@ end
 --   targets - список { Model, Humanoid, Distance }, ближайшие первыми, не больше лимита;
 --   stats   - сколько кандидатов найдено и почему часть отсеяна (для отладки).
 function CombatService:FindTargets(attacker, character, root, weapon, options)
+    local evaded = options and options.Evaded
     local excluded = options and options.Excluded
     local limit = options and options.Limit or weapon.MaxTargets
 
@@ -282,7 +347,7 @@ function CombatService:FindTargets(attacker, character, root, weapon, options)
 
     local boxSize = Vector3.new(
         weapon.HitboxWidth,
-        CombatConfig.HitboxHeight,
+        weapon.HitboxHeight or CombatConfig.HitboxHeight,
         weapon.AttackRange
     )
 
@@ -305,7 +370,8 @@ function CombatService:FindTargets(attacker, character, root, weapon, options)
 
             local targetRoot = model:FindFirstChild("HumanoidRootPart")
 
-            if humanoid.Health > 0 and targetRoot and not (excluded and excluded[model]) then
+            if humanoid.Health > 0 and targetRoot and not (excluded and excluded[model])
+                and not (evaded and evaded[model]) then
                 stats.Candidates += 1
 
                 local reachable, reason = IsRootReachable(origin, targetRoot, weapon)
@@ -378,6 +444,7 @@ function CombatService:RunActiveWindow(attack)
 
     local hits = 0
     local scans = 0
+    local evaded = moveId == "Heavy" and {} or nil
 
     while CombatStateService:IsAttackActive(character, attackId) do
         local humanoid = character:FindFirstChildOfClass("Humanoid")
@@ -398,15 +465,17 @@ function CombatService:RunActiveWindow(attack)
 
         local targets, stats, hitboxOrigin = self:FindTargets(player, character, root, weapon, {
             AttackId = attackId,
+            Evaded = evaded,
             Excluded = CombatStateService:GetHitTargets(character, attackId),
             Limit = remaining,
         })
 
         for _, target in ipairs(targets) do
             -- RegisterHit подтверждает, что удар ещё в Active и цель ещё не поражена
-            if not CombatStateService:IsDodgeInvulnerable(target.Model)
-                and CombatStateService:RegisterHit(character, attackId, target.Model)
-            then
+            if CombatStateService:IsDodgeInvulnerable(target.Model) then
+                -- A successful evasion covers this swing even after the i-frames expire.
+                if evaded then evaded[target.Model] = true end
+            elseif CombatStateService:RegisterHit(character, attackId, target.Model) then
                 hits += 1
 
                 -- Направление блока берётся от позиции атакующего на момент попадания
@@ -415,7 +484,16 @@ function CombatService:RunActiveWindow(attack)
                     damage,
                     hitboxOrigin.Position,
                     character,
-                    attackId
+                    attackId,
+                    function()
+                        if move and move.Standalone then CombatStateService:UseHitRecovery(character, attackId) end
+                        if not pressureMove then return false end
+                        local pressure = PostureService:AddPosture(target.Model, pressureMove.PostureDamage, {
+                            Source = character, Reason = "BlockedAttack", AttackId = attackId,
+                            WeaponId = attack.WeaponId, MoveId = moveId,
+                        })
+                        return pressure.Broke
+                    end
                 )
                 local victim = Players:GetPlayerFromCharacter(target.Model)
 
@@ -441,7 +519,8 @@ function CombatService:RunActiveWindow(attack)
                         end
                     else
                         CombatStateService:ApplyStun(
-                            target.Model, move and move.HitStun or weapon.HitStun, "Hit"
+                            target.Model, move and move.HitStun or weapon.HitStun,
+                            moveId == "Heavy" and "HeavyHit" or "Hit"
                         )
                     end
 
@@ -456,36 +535,13 @@ function CombatService:RunActiveWindow(attack)
                 -- Успешное парирование оглушает атакующего.
                 -- Визуальная реакция Parried отправляется отдельно и не зависит
                 -- от того, является атакующий игроком или NPC.
-                if outcome.Result == CombatStates.DamageResults.Blocked and pressureMove then
-                    PostureService:AddPosture(target.Model, pressureMove.PostureDamage, {
-                        Source = character, Reason = "BlockedAttack", AttackId = attackId,
-                        WeaponId = attack.WeaponId, MoveId = moveId,
-                    })
-                end
                 if outcome.Result == CombatStates.DamageResults.Parried then
                     if attack.TracksCombo then
                         ComboService:Reset(character, "Parried")
                         attack.TracksCombo = false
                     end
 
-                    PostureService:ReducePosture(target.Model, PostureConfig.Parry.DefenderRecovery, "SuccessfulParry")
-                    local pressure = PostureService:AddPosture(character, PostureConfig.Parry.AttackerPostureDamage, {
-                        Source = target.Model, Reason = "Parried", AttackId = attackId,
-                        WeaponId = attack.WeaponId, MoveId = moveId,
-                    })
-                    if not pressure.Broke then
-                        CombatStateService:ApplyStun(character, CombatStateConfig.Stun.ParryDuration, "Parry")
-                    end
-
-                    if player and not pressure.Broke then
-                        feedback:FireClient(player, {
-                            Kind = "Reaction",
-                            Reaction = "Parried",
-                        })
-                    elseif not pressure.Broke then
-                        -- Атакует NPC: реакцию Parried проигрывает его Animator на сервере
-                        NPCCombatAnimationService:PlayReaction(character, "Parried")
-                    end
+                    ApplyParry(character, player, target.Model, attackId, attack.WeaponId, moveId, feedback)
                 end
 
                 -- Damage - фактически нанесённый урон; Result - Hit | Blocked | Parried.
@@ -495,6 +551,7 @@ function CombatService:RunActiveWindow(attack)
                         feedback:FireClient(player, {
                             Kind = "Hit",
                             Target = target.Model,
+                            PostureBroken = outcome.PostureBroken,
                             Damage = outcome.Damage,
                             Result = outcome.Result,
                         })
@@ -504,6 +561,7 @@ function CombatService:RunActiveWindow(attack)
                         feedback:FireClient(victim, {
                             Kind = "Received",
                             VictimState = victimState,
+                            PostureBroken = outcome.PostureBroken,
                             Damage = outcome.Damage,
                             Result = outcome.Result,
                         })
@@ -552,16 +610,38 @@ local function GetMoveTiming(weapon, move)
         Active = move.Active,
         Recovery = move.RecoveryOnMiss,
         RecoveryOnHit = move.RecoveryOnHit,
-        CanBlockDuringRecovery = not move.Finisher and weapon.AttackTiming.CanBlockDuringRecovery,
-        CanDodgeDuringRecovery = not move.Finisher and weapon.AttackTiming.CanDodgeDuringRecovery,
+        CanBlockDuringRecovery = not move.Standalone and not move.Finisher and weapon.AttackTiming.CanBlockDuringRecovery,
+        CanDodgeDuringRecovery = not move.Standalone and not move.Finisher and weapon.AttackTiming.CanDodgeDuringRecovery,
     }
 end
 
-local function BeginAttack(self, character, owner, strength)
+-- All entry moves share one active-window record. Continuations replace it only
+-- after the state service has successfully issued their new attack identity.
+local function RegisterAttack(character, owner, strength, weaponId, weapon, moveId, move, attackId)
+    if move and (move.Hitbox or move.MaxTargets) then
+        weapon = table.clone(weapon)
+        local box = move.Hitbox
+        if box then
+            weapon.AttackRange *= box.RangeMultiplier
+            weapon.HitboxWidth *= box.WidthMultiplier
+            weapon.HitboxHeight = CombatConfig.HitboxHeight * (box.HeightMultiplier or 1)
+        end
+        weapon.MaxTargets = move.MaxTargets or weapon.MaxTargets
+    end
+
+    Attacks[character] = {
+        AttackId = attackId, Player = owner, Character = character, Strength = strength,
+        WeaponId = weaponId, Weapon = weapon, Move = move,
+        TracksCombo = owner ~= nil and move ~= nil and not move.Standalone
+            and ComboService:BeginSeries(character, weaponId, attackId, move.AlternativeStart and moveId or nil),
+    }
+end
+
+local function BeginMove(self, character, owner, strength, requestedMove)
     local humanoid = character and character:FindFirstChildOfClass("Humanoid")
     local root = character and character:FindFirstChild("HumanoidRootPart")
 
-    if not humanoid or not root or humanoid.Health <= 0 then
+    if not humanoid or not root or not character.Parent or humanoid.Health <= 0 then
         return false, "CharacterUnavailable"
     end
 
@@ -575,19 +655,26 @@ local function BeginAttack(self, character, owner, strength)
 
     local weaponId, weapon = self:GetWeapon(character)
 
-    -- Кулдаун оружия не зависит от длительности самого удара
-    if not self:TryStartCooldown(owner or character, weapon.Cooldown, os.clock()) then
-        return false, "Cooldown"
+    local moveId, move
+    if requestedMove then
+        moveId = requestedMove
+        move = WeaponComboConfig.GetMove(weaponId, moveId)
+        if not move then return false, "UnknownMove" end
+    elseif owner then
+        moveId, move = WeaponComboConfig.GetStartMove(weaponId)
     end
 
-    local moveId, move
-    if owner then
-        moveId, move = WeaponComboConfig.GetStartMove(weaponId)
+    local now = os.clock()
+    if move and move.Standalone then
+        if now < (NextHeavyAt[character] or 0) then return false, "Cooldown" end
+    elseif not self:TryStartCooldown(owner or character, weapon.Cooldown, now) then
+        return false, "Cooldown"
     end
 
     local started, attackId = CombatStateService:StartAttack(character, GetMoveTiming(weapon, move), {
         WeaponId = weaponId, MoveId = moveId,
         ComboIndex = move and move.Index,
+        SuperArmor = move and move.SuperArmor,
     })
 
     if not started then
@@ -596,18 +683,11 @@ local function BeginAttack(self, character, owner, strength)
         return false, attackId
     end
 
-    Attacks[character] = {
-        AttackId = attackId,
-        Player = owner,
-        Character = character,
-        WeaponId = weaponId,
-        Weapon = weapon,
-        Strength = strength,
-        Move = move,
-        TracksCombo = move ~= nil and ComboService:BeginSeries(character, weaponId, attackId),
-    }
-
-    Log(owner and owner.Name or character.Name, "attack", attackId, weaponId, "started")
+    if move and move.Standalone then
+        NextHeavyAt[character] = now + move.Cooldown
+    end
+    RegisterAttack(character, owner, strength, weaponId, weapon, moveId, move, attackId)
+    Log(owner and owner.Name or character.Name, "attack", attackId, weaponId, moveId or "Light1", "started")
 
     return true, attackId
 end
@@ -626,11 +706,7 @@ function CombatService:BeginDashAttack(player, dashId)
         WeaponId = weaponId, MoveId = "DashLight", ComboIndex = move.Index, DashMomentum = momentum,
     }, dashId)
     if not started then return false, attackId end
-    Attacks[character] = {
-        AttackId = attackId, Player = player, Character = character,
-        WeaponId = weaponId, Weapon = weapon, Move = move,
-        TracksCombo = ComboService:BeginSeries(character, weaponId, attackId, "DashLight"),
-    }
+    RegisterAttack(character, player, nil, weaponId, weapon, "DashLight", move, attackId)
     Log(player.Name, "attack", attackId, "DashLight", "converted from dash", dashId)
     return true, attackId
 end
@@ -672,23 +748,32 @@ function CombatService:PerformAttack(player)
         return buffered, reason
     end
 
-    return BeginAttack(self, character, player, nil)
+    return BeginMove(self, character, player)
 end
 
 -- Атака NPC (вызывается только сервером, например поведением манекена).
 -- Использует тот же путь, что и игрок: проверку состояния, кулдаун, область удара,
 -- лимит целей и ApplyDamage. options.Strength - сила NPC (влияет на урон так же, как у игрока).
 -- Бить NPC может только по игрокам (см. IsPvPAllowed).
+function CombatService:PerformHeavy(player)
+    if not DataService:GetProfile(player) then return false, "NoProfile" end
+    return BeginMove(self, player.Character, player, nil, "Heavy")
+end
+
+local function BeginNPCMove(self, character, moveId, options)
+    if typeof(character) ~= "Instance" or not character:IsA("Model") then return false, "InvalidCharacter" end
+    if Players:GetPlayerFromCharacter(character) then return false, "NotNPC" end
+    return BeginMove(self, character, nil, options and options.Strength, moveId)
+end
+
+function CombatService:PerformNPCMove(character, moveId, options)
+    if moveId ~= "Heavy" and moveId ~= "Light1" then return false, "UnknownMove" end
+    return BeginNPCMove(self, character, moveId, options)
+end
+
 function CombatService:PerformNPCAttack(character, options)
-    if typeof(character) ~= "Instance" or not character:IsA("Model") then
-        return false, "InvalidCharacter"
-    end
-
-    if Players:GetPlayerFromCharacter(character) then
-        return false, "NotNPC" -- игроки атакуют только через запрос клиента
-    end
-
-    return BeginAttack(self, character, nil, options and options.Strength)
+    -- Existing NPCs retain the weapon's original light timing and damage.
+    return BeginNPCMove(self, character, nil, options)
 end
 
 local function ContinueCombo(character, attackId)
@@ -746,6 +831,7 @@ local STATE_REQUEST_ACTIONS = {
 -- Отправляет игроку его текущее боевое состояние.
 local function SendState(player, payload)
     payload.Character = player.Character
+    payload.AbilityAnimation = CombatStateService:GetAbilityAnimation(player.Character)
     payload.DodgeAnimation = CombatStateService:GetDodgeAnimationState(player.Character)
     payload.StunAnimation = CombatStateService:GetStunAnimationState(player.Character)
     payload.AttackAnimation = CombatStateService:GetAttackAnimationState(player.Character)
@@ -826,6 +912,10 @@ function CombatService:Init()
         end
     end)
 
+    CombatStateService:OnAbilityPhaseChanged(function(character, ability)
+        local player = Players:GetPlayerFromCharacter(character)
+        if player then SendState(player, { State = CombatStates.UsingAbility, Phase = ability.Phase }) end
+    end)
     CombatStateService:OnRecoveryFinished(ContinueCombo)
     CombatStateService:OnStunUpdated(function(character)
         local owner = Players:GetPlayerFromCharacter(character)
@@ -905,11 +995,11 @@ function CombatService:Init()
     -- RemoteService добавляет лимит частоты и проверку аргументов.
     RemoteService:OnEvent("CombatRequest", {
         RateLimit = 15,
-        Validate = function(action)
-            return action == "Attack"
+        Validate = function(action, ...)
+            return select("#", ...) == 0 and (action == "Attack" or action == "Heavy")
         end,
-    }, function(player)
-        self:PerformAttack(player)
+    }, function(player, action)
+        if action == "Heavy" then self:PerformHeavy(player) else self:PerformAttack(player) end
     end)
 
     print("[CombatService] Initialized")

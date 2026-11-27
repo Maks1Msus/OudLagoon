@@ -48,6 +48,7 @@ CombatAnimationConfig.Slots = {
     Light1 = attackSettings,
     Light2 = attackSettings,
     Light3 = attackSettings,
+    Heavy = attackSettings,
     DashLight = attackSettings,
 
     BlockStart = { Priority = Enum.AnimationPriority.Action, Looped = false },
@@ -88,6 +89,7 @@ CombatAnimationConfig.Weapons = {
         Light1 = "rbxassetid://82567611460490",
         Light2 = "rbxassetid://80589512439773",
         Light3 = "rbxassetid://88850007621218",
+        Heavy = "rbxassetid://88850007621218", -- temporary Heavy clip
         UnarmedIdle = "rbxassetid://75878436802753",
     },
 
@@ -96,6 +98,7 @@ CombatAnimationConfig.Weapons = {
         Light1 = "rbxassetid://135807577051754",
         Light2 = "rbxassetid://108880380825509",
         Light3 = "rbxassetid://102214543831853",
+        Heavy = "rbxassetid://102214543831853", -- temporary Heavy clip
     },
 }
 
@@ -236,7 +239,7 @@ function CombatAnimationConfig.IsStunSlot(slot)
 end
 
 function CombatAnimationConfig.GetStunSlot(source, weaponId, lastHitSlot)
-    if source == "Hit" then
+    if source == "Hit" or source == "HeavyHit" then
         return CombatAnimationConfig.PickHitSlot(weaponId, lastHitSlot)
     end
     local slot = source == "PostureBreak" and "PostureBreak" or source == "Parry" and "Parried" or "Stunned"
@@ -245,7 +248,7 @@ end
 
 -- Слоты, которые использует код боевых анимаций (клиент игрока и NPC).
 CombatAnimationConfig.RequiredSlots = {
-    "Attack", "Light1", "Light2", "Light3", "DashLight", "BlockStart", "BlockLoop", "BlockHit", "Parry", "Parried",
+    "Attack", "Light1", "Light2", "Light3", "Heavy", "DashLight", "BlockStart", "BlockLoop", "BlockHit", "Parry", "Parried",
     "Hit1", "Hit2", "Hit3", "PostureBreak", "Stunned", "DashForward", "DashBackward", "DashLeft", "DashRight", "Dodge", "DodgeForward", "DodgeBackward", "DodgeLeft", "DodgeRight", "UnarmedIdle"
 }
 
@@ -260,6 +263,12 @@ function CombatAnimationConfig.Validate()
     for _, slot in ipairs(CombatAnimationConfig.RequiredSlots) do
         if not CombatAnimationConfig.Slots[slot] then
             add("slot", slot, "is used by the animation code but missing in Slots")
+        end
+    end
+
+    for weaponId, weapon in pairs(require(script.Parent.WeaponComboConfig).Weapons) do
+        if weapon.Moves.Heavy and not CombatAnimationConfig.GetAnimationId("Heavy", weaponId) then
+            add("Missing Heavy animation for", weaponId)
         end
     end
 

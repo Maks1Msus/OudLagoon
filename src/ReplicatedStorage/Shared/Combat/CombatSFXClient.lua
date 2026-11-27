@@ -51,6 +51,7 @@ local function Play(character, key, token)
 end
 
 function Client:AttackStarted(character, weaponId, moveId, attackId)
+    if moveId == "Heavy" then return false end -- windup at Startup, swing at confirmed Active
     if not Config.LocalSwing or character ~= Players.LocalPlayer.Character or type(attackId) ~= "number" then return false end
     local moves = Config.Attacks[weaponId]
     return Play(character, moves and moves[moveId], "Attack:" .. attackId)

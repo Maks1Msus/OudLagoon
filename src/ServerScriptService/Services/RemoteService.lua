@@ -18,7 +18,9 @@ local EVENT_NAMES = {
     "CombatFeedback",     -- сервер -> клиент (попадания, числа урона)
     "CombatStateRequest", -- клиент -> сервер: "BlockStart" | "BlockEnd" | "Sync" (см. CombatService)
     "CombatStateChanged", -- сервер -> клиент: { State, OldState, Phase, TransitionId }
-    "AbilityRequest",     -- клиент -> сервер (пока без обработчика)
+    "AbilityRequest",     -- slot, aim updates, or binding change
+    "MagicRequest",       -- recipe and aim
+    "AbilityResult",      -- server cast feedback
     "InteractionRequest", -- клиент -> сервер (пока без обработчика)
     "DebugRequest",       -- клиент -> сервер (только Studio, см. DebugService)
     "StatAllocationRequest",

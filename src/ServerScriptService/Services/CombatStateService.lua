@@ -76,7 +76,8 @@ local NextPhase = {
 -- Blocking -> Dodging разрешён: уклонение сразу завершает блок, отпускать его не нужно.
 -- Dodging -> Blocking во время рывка и Blocking -> Attacking запрещены (сначала закончить блок).
 local AllowedTransitions = {
-    [State.Idle] = ToSet({ State.Attacking, State.Blocking, State.Dodging, State.Stunned, State.Ragdolled, State.Dead }),
+    [State.UsingAbility] = ToSet({ State.Idle, State.Stunned, State.Ragdolled, State.Dead }),
+    [State.Idle] = ToSet({ State.UsingAbility, State.Attacking, State.Blocking, State.Dodging, State.Stunned, State.Ragdolled, State.Dead }),
     [State.Attacking] = ToSet({ State.Idle, State.Blocking, State.Dodging, State.Stunned, State.Ragdolled, State.Dead }),
     [State.Blocking] = ToSet({ State.Idle, State.Dodging, State.Stunned, State.Ragdolled, State.Dead }),
     [State.Dodging] = ToSet({ State.Idle, State.Stunned, State.Ragdolled, State.Dead }),
@@ -87,6 +88,7 @@ local AllowedTransitions = {
 
 -- В какое поле записи складываются данные состояния
 local SubRecordKey = {
+    [State.UsingAbility] = "Ability",
     [State.Attacking] = "Attack",
     [State.Blocking] = "Block",
     [State.Dodging] = "Dodge",
@@ -175,6 +177,7 @@ local function CreateSignal()
     return signal
 end
 
+local AbilityPhaseChanged = CreateSignal()
 local RecoveryFinished = CreateSignal()
 local StateChanged = CreateSignal()
 local AttackPhaseChanged = CreateSignal()
@@ -255,7 +258,7 @@ local function GetComboParryWindow(record, now)
 end
 
 local function CanEnter(record, newState, now)
-    if newState == State.Attacking and IsComboAttackRestricted(record) then
+    if (newState == State.Attacking or newState == State.UsingAbility) and IsComboAttackRestricted(record) then
         return false, "ComboDefenseOnly"
     end
     local allowed = AllowedTransitions[record.State]
@@ -528,6 +531,11 @@ local function Transition(self, character, newState, options, previousAttackId, 
             data.PhaseStartedAt = now
             data.PhaseEndsAt = nil
             data.HitTargets = {} -- кого уже поразил этот удар (используется на этапе 2)
+        elseif newState == State.UsingAbility then
+            data.CastId = record.TransitionId
+            data.Phase = Phase.Startup
+            data.StartedAt = workspace:GetServerTimeNow()
+            data.PhaseEndsAt = data.StartedAt + data.Cast.Startup
         elseif newState == State.Blocking then
             data.StartedAt = now
             data.ParryEndsAt = now + CombatStateConfig.Block.ParryWindow
@@ -602,6 +610,59 @@ function CombatStateService:GetStunAnimationState(character)
     }
 end
 
+function CombatStateService:GetAbility(character)
+    local record = Records[character]
+    return record and record.Ability
+end
+
+function CombatStateService:GetAbilityAnimation(character)
+    local ability = self:GetAbility(character)
+    if not ability or not ability.AnimationSlot then return nil end
+    return { Slot = ability.AnimationSlot, AttackId = ability.CastId, Phase = ability.Phase,
+        StartedAt = ability.StartedAt, Duration = ability.Cast[ability.Phase],
+        Timing = { Startup = ability.Cast.Startup, Active = ability.Cast.Active, Recovery = ability.Cast.Recovery } }
+end
+
+function CombatStateService:OnAbilityPhaseChanged(callback)
+    return AbilityPhaseChanged.Connect(callback)
+end
+
+function CombatStateService:StartAbility(character, definition, release)
+    local cast = definition.Cast
+    local ok, id = self:Transition(character, State.UsingAbility, {
+        Data = { AbilityId = definition.Id, Cast = cast, AnimationSlot = definition.AnimationSlot, Color = definition.Color },
+    })
+    if not ok then return false, id end
+    local ability = self:GetAbility(character)
+    if not ability or ability.CastId ~= id then return false, "Interrupted" end
+    local function setPhase(phase, duration)
+        ability.Phase = phase
+        ability.StartedAt = workspace:GetServerTimeNow()
+        ability.PhaseEndsAt = ability.StartedAt + duration
+        AbilityPhaseChanged.Fire(character, ability)
+    end
+    self:Delay(character, cast.Startup, function()
+        local humanoid = character:FindFirstChildOfClass("Humanoid")
+        if not character.Parent or not humanoid or humanoid.Health <= 0 then
+            self:SetDead(character)
+            return
+        end
+        setPhase(Phase.Active, cast.Active)
+        if self:GetAbility(character) ~= ability then return end
+        local ran, released = pcall(release, id)
+        if not ran then warn("[Ability] Release failed:", released) end
+        if self:GetAbility(character) ~= ability then return end
+        if not ran or not released then self:Transition(character, State.Idle) return end
+        self:Delay(character, cast.Active, function()
+            setPhase(Phase.Recovery, cast.Recovery)
+            if self:GetAbility(character) == ability then
+                self:Delay(character, cast.Recovery, function() self:Transition(character, State.Idle) end)
+            end
+        end)
+    end)
+    return true, id
+end
+
 function CombatStateService:GetAttackAnimationState(character)
     local record = character and Records[character]
     local attack = record and record.Attack
@@ -611,9 +672,15 @@ function CombatStateService:GetAttackAnimationState(character)
 
     return {
         AttackId = attack.AttackId,
+        WeaponId = attack.WeaponId,
+        MoveId = attack.MoveId,
         Phase = attack.Phase,
         StartedAt = attack.AnimationPhaseStartedAt,
         Duration = attack.AnimationPhaseDuration,
+        ArmorStartsAt = attack.Phase == Phase.Active and attack.SuperArmor
+            and attack.AnimationPhaseStartedAt + attack.SuperArmor.Start or nil,
+        ArmorEndsAt = attack.Phase == Phase.Active and attack.SuperArmor
+            and attack.AnimationPhaseStartedAt + attack.SuperArmor.Finish or nil,
         Timing = attack.AnimationTiming and table.clone(attack.AnimationTiming),
         DashMomentum = attack.Phase == Phase.Startup and attack.DashMomentum
             and table.clone(attack.DashMomentum) or nil,
@@ -706,6 +773,14 @@ end
 -- Оглушает персонажа на заданное время.
 -- Стан прерывает любое разрешённое текущее боевое состояние.
 -- Повторный стан не продлевает действующий и не обходит иммунитет.
+function CombatStateService:IsSuperArmored(character)
+    local record = Records[character]
+    local attack = record and record.Attack
+    if not attack or attack.Phase ~= Phase.Active or not attack.SuperArmor then return false end
+    local elapsed = os.clock() - attack.PhaseStartedAt
+    return elapsed >= attack.SuperArmor.Start and elapsed < attack.SuperArmor.Finish
+end
+
 function CombatStateService:ApplyStun(character, duration, source)
     local record = GetRecord(character)
 
@@ -725,8 +800,10 @@ function CombatStateService:ApplyStun(character, duration, source)
 
     local now = os.clock()
 
+    if source == "Hit" and self:IsSuperArmored(character) then return false, "SuperArmor" end
+
     -- A successful parry must interrupt the attacker even during post-hit immunity.
-    if now < record.StunImmuneUntil and source ~= "Parry" and source ~= "PostureBreak" then
+    if record.State ~= State.UsingAbility and now < record.StunImmuneUntil and source ~= "Parry" and source ~= "PostureBreak" then
         return false, "StunImmune"
     end
 
@@ -832,8 +909,10 @@ function CombatStateService:ApplyComboHitStun(character, duration, attacker, att
     if record.State == State.Dead then
         return false, "Dead"
     end
+    if self:IsSuperArmored(character) then return false, "SuperArmor" end
     local lock = GetComboLock(self, character, record)
     if not lock then
+        if record.State == State.UsingAbility then return self:ApplyStun(character, duration, "Hit") end
         return false, "ComboLockImmune"
     end
 
@@ -846,7 +925,7 @@ function CombatStateService:ApplyComboHitStun(character, duration, attacker, att
         then
             return false, "OtherStun"
         end
-    elseif now < record.StunImmuneUntil
+    elseif record.State ~= State.UsingAbility and now < record.StunImmuneUntil
         and not (record.StunImmuneSource == "Hit" and record.StunImmuneSeriesId == seriesId)
     then
         return false, "StunImmune"
@@ -909,6 +988,7 @@ local function StartAttack(self, character, timing, data, previousAttackId, dash
                 Active = timing.Active,
                 Recovery = timing.Recovery,
             },
+            SuperArmor = data and data.SuperArmor,
             DashMomentum = data and data.DashMomentum,
             WeaponId = data and data.WeaponId,
             MoveId = data and data.MoveId,
@@ -1012,6 +1092,7 @@ function CombatStateService:RestrictComboCounterattack(character, attackId, targ
         return true
     end
 
+    if self:IsSuperArmored(target) then return false, "SuperArmor" end
     local lock = GetComboLock(self, target, targetRecord)
     if not lock then
         return false, "ComboLockImmune"
@@ -1243,7 +1324,7 @@ end
 -- sourcePosition - Vector3 позиции атакующего (для проверки направления).
 -- Возвращает { Result = DamageResults.*, Damage = нанесено, Absorbed = поглощено }.
 -- Оглушение атакующего при парировании появится вместе с ApplyStun (следующий этап).
-function CombatStateService:ApplyDamage(character, damage, sourcePosition, attacker, attackId)
+function CombatStateService:ApplyDamage(character, damage, sourcePosition, attacker, attackId, onBlocked)
     local function Outcome(result, applied)
         return {
             Result = result,
@@ -1302,6 +1383,9 @@ function CombatStateService:ApplyDamage(character, damage, sourcePosition, attac
 
     local outcome = Outcome(result, applied)
 
+    if result == DamageResult.Blocked and onBlocked then
+        outcome.PostureBroken = onBlocked()
+    end
     DamageApplied.Fire(character, outcome, sourcePosition, impact)
 
     return outcome

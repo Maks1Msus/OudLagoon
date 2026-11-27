@@ -40,10 +40,16 @@ local function Publish(character)
     end
 
     local state = CombatStateService:GetState(character)
+    local cast = state == CombatStates.UsingAbility and CombatStateService:GetAbility(character)
+    character:SetAttribute(Attributes.CastColor, cast and cast.Color or nil)
     character:SetAttribute(Attributes.State, state)
     local dodge = CombatStateService:GetDodgeAnimationState(character)
     character:SetAttribute(Attributes.DodgeIFrameEndsAt, dodge and dodge.IFrameEndsAt)
     character:SetAttribute(Attributes.DodgeEndsAt, dodge and dodge.EndsAt)
+    local attack = CombatStateService:GetAttackAnimationState(character)
+    character:SetAttribute(Attributes.MoveId, attack and attack.MoveId)
+    character:SetAttribute(Attributes.ArmorStartsAt, attack and attack.ArmorStartsAt)
+    character:SetAttribute(Attributes.ArmorEndsAt, attack and attack.ArmorEndsAt)
     if state == CombatStates.Idle or state == CombatStates.Dead then
         CollectionService:RemoveTag(character, Config.ActorTag)
         character:SetAttribute(Attributes.AttackId, nil)
@@ -53,7 +59,6 @@ local function Publish(character)
         return
     end
 
-    local attack = CombatStateService:GetAttackAnimationState(character)
     character:SetAttribute(Attributes.AttackId, attack and attack.AttackId)
     character:SetAttribute(Attributes.Phase, attack and attack.Phase)
     character:SetAttribute(Attributes.ActiveEndsAt,
@@ -61,7 +66,7 @@ local function Publish(character)
             and type(attack.StartedAt) == "number" and type(attack.Duration) == "number"
             and (attack.StartedAt + attack.Duration) or nil)
     character:SetAttribute(Attributes.WeaponId,
-        state == CombatStates.Attacking and WeaponRegistry.ResolveFromCharacter(character) or nil)
+        attack and (attack.WeaponId or WeaponRegistry.ResolveFromCharacter(character)) or nil)
     CollectionService:AddTag(character, Config.ActorTag)
 end
 
@@ -96,10 +101,14 @@ function CombatVFXService:Init()
         end
     end)
     CombatStateService:OnDamageApplied(function(character, outcome, _sourcePosition, impact)
-        if not Config.Reactions[outcome.Result] then
+        if outcome.PostureBroken or not Config.Reactions[outcome.Result] then
             return
         end
         local payload = { Result = outcome.Result }
+        if impact and impact.MoveId == "Heavy" then
+            if outcome.Result == CombatStates.DamageResults.Hit then payload.Reaction = "HeavyImpact" end
+            if outcome.Result == CombatStates.DamageResults.Blocked then payload.Reaction = "HeavyBlock" end
+        end
         if outcome.Result == CombatStates.DamageResults.Hit and outcome.Damage > 0 and impact then
             payload.Attacker = impact.Attacker
             payload.AttackId = impact.AttackId

@@ -21,6 +21,6 @@ local Config = {
             OffsetB = CFrame.Angles(0,math.rad(90),0) },
     },
     -- Confirmed Hit only, on the victim. Sword has no impact assets assigned yet.
-    Attacks = { Unarmed = { Light1 = "Light1", Light2 = "Light2", Light3 = "Light3", DashLight = "Light1" } },
+    Attacks = { Unarmed = { Light1 = "Light1", Light2 = "Light2", Light3 = "Light3", Heavy = "Light3", DashLight = "Light1" } },
 }
 return Config

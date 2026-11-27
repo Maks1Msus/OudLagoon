@@ -57,4 +57,10 @@ TrainingDummyConfig.Modes = {
     },
 }
 
+local heavyTest = table.clone(TrainingDummyConfig.Modes.Aggressive)
+heavyTest.DisplayName = "Training Dummy (Heavy)"
+heavyTest.Behavior = "Aggressive"
+heavyTest.MoveId = "Heavy"
+TrainingDummyConfig.Modes.HeavyTest = heavyTest
+
 return TrainingDummyConfig

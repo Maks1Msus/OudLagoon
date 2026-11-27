@@ -33,6 +33,27 @@ function Hud.new(parent, toggle)
     button.AnchorPoint = Vector2.one
     Theme.outline(button)
 
+    local runService = game:GetService("RunService")
+    local shared = game:GetService("ReplicatedStorage").Shared
+    if runService:IsStudio() and require(shared.Config.CombatConfig).DebugHitboxes then
+        local attrs = require(shared.Config.CombatVFXConfig).Attributes
+        local player = game:GetService("Players").LocalPlayer
+        local debugLabel = Theme.label(status, "HeavyDebug", "", px(0, -24), px(310, 20), 12)
+        local connection = runService.Heartbeat:Connect(function()
+            local character = player.Character
+            debugLabel.Visible = character ~= nil and character:GetAttribute(attrs.MoveId) == "Heavy"
+            if debugLabel.Visible then
+                local now = workspace:GetServerTimeNow()
+                local starts = character:GetAttribute(attrs.ArmorStartsAt)
+                local ends = character:GetAttribute(attrs.ArmorEndsAt)
+                local armor = starts and ends and now >= starts and now < ends
+                debugLabel.Text = "Heavy  " .. (character:GetAttribute(attrs.Phase) or "")
+                    .. (armor and "   Super Armor" or "")
+            end
+        end)
+        status.Destroying:Connect(function() connection:Disconnect() end)
+    end
+
     return {
         Status = status,
         OpenButton = button,

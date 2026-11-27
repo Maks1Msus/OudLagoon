@@ -3,6 +3,7 @@
 
 local CombatStates = {
     Idle = "Idle",
+    UsingAbility = "UsingAbility",
     Attacking = "Attacking",
     Blocking = "Blocking",
     Dodging = "Dodging",

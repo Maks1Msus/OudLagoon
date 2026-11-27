@@ -245,7 +245,12 @@ local function RunAggressiveBehavior(model, humanoid, modeConfig)
                         and AngleToTarget(root, offset) <= modeConfig.MaxAttackAngle
                     then
                         -- Отказ (кулдаун, не то состояние) - обычная ситуация, просто ждём
-                        CombatService:PerformNPCAttack(model, { Strength = modeConfig.Strength })
+                        local options = { Strength = modeConfig.Strength }
+                        if modeConfig.MoveId then
+                            CombatService:PerformNPCMove(model, modeConfig.MoveId, options)
+                        else
+                            CombatService:PerformNPCAttack(model, options)
+                        end
                     end
                 else
                     engagedSince = nil

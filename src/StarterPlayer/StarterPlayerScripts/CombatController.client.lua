@@ -44,6 +44,7 @@ local BLOCK_RETRY_INTERVAL = 0.1
 
 -- В этих состояниях атаку отправлять бессмысленно: сервер её отклонит
 local CANNOT_ATTACK_STATES = {
+    [CombatStates.UsingAbility] = true,
     [CombatStates.Blocking] = true,
     [CombatStates.Stunned] = true,
     [CombatStates.Ragdolled] = true,
@@ -109,7 +110,7 @@ local function tryDodge()
     local now = os.clock()
     local directionId = getDashDirectionId()
     if not directionId or now < nextDodgeRequestAt then return end
-    if combatState == CombatStates.Stunned or combatState == CombatStates.Ragdolled or combatState == CombatStates.Dead
+    if combatState == CombatStates.UsingAbility or combatState == CombatStates.Stunned or combatState == CombatStates.Ragdolled or combatState == CombatStates.Dead
         or combatState == CombatStates.Dodging then return end
     local requestId = DashMovement.Request(directionId,
         combatState == CombatStates.Idle or combatState == CombatStates.Blocking)
@@ -168,6 +169,12 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 
     if input.UserInputType == Enum.UserInputType.MouseButton1 then
         tryAttack()
+    elseif input.KeyCode == Enum.KeyCode.R or input.UserInputType == Enum.UserInputType.MouseButton3 then
+        local humanoid = getHumanoid()
+        if humanoid and humanoid.Health > 0 and not blockHeld and combatState == CombatStates.Idle
+            and not DashMovement.IsMoving() then
+            CombatRequest:FireServer("Heavy")
+        end
     elseif input.KeyCode == Enum.KeyCode.Q then
         tryDodge()
     elseif isBlockInput(input) then
@@ -234,7 +241,7 @@ local BLOCKED_COLOR = Color3.fromRGB(170, 190, 220)
 local PARRIED_COLOR = Color3.fromRGB(120, 200, 255)
 
 -- result: "Hit" | "Blocked" | "Parried" (от сервера; для старых данных может быть nil)
-local function showDamageNumber(target, damage, result)
+local function showDamageNumber(target, damage, result, postureBroken)
     if typeof(target) ~= "Instance" or type(damage) ~= "number" then
         return
     end
@@ -242,7 +249,10 @@ local function showDamageNumber(target, damage, result)
     local text = tostring(math.floor(damage))
     local color = DAMAGE_COLOR
 
-    if result == CombatStates.DamageResults.Parried then
+    if postureBroken then
+        text = text .. " (Posture Break)"
+        color = Color3.fromRGB(225, 193, 255)
+    elseif result == CombatStates.DamageResults.Parried then
         text = "Parried!"
         color = PARRIED_COLOR
     elseif result == CombatStates.DamageResults.Blocked then
@@ -293,6 +303,6 @@ end
 
 CombatFeedback.OnClientEvent:Connect(function(payload)
     if type(payload) == "table" and payload.Kind == "Hit" then
-        showDamageNumber(payload.Target, payload.Damage, payload.Result)
+        showDamageNumber(payload.Target, payload.Damage, payload.Result, payload.PostureBroken)
     end
 end)

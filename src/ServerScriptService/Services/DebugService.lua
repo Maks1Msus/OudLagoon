@@ -98,6 +98,10 @@ function Actions.SpawnBlockingDummy(player)
 end
 
 -- Манекен, который сам атакует игрока, подошедшего на дистанцию удара.
+function Actions.SpawnHeavyDummy(player)
+    TrainingDummyService:SpawnForPlayer(player, "HeavyTest")
+end
+
 function Actions.SpawnAggressiveDummy(player)
     TrainingDummyService:SpawnForPlayer(player, "Aggressive")
 end

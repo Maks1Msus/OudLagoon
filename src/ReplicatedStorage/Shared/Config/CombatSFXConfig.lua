@@ -12,6 +12,11 @@ local Config = {
     Defaults = { Volume = 0.6, PlaybackSpeed = 1, RollOffMinDistance = 6,
         RollOffMaxDistance = 70, MaxDuration = 8 },
     Clips = {
+        HeavyWindup = { SoundId = "120430503624654", Volume = 0.28, PlaybackSpeed = 0.62 },
+        UnarmedHeavy = { SoundId = "120430503624654", PlaybackSpeed = 0.77 },
+        SwordHeavy = { SoundId = "137628815514180", PlaybackSpeed = 0.78 },
+        HeavyImpact = { SoundId = "136699507852787", PlaybackSpeed = 0.70 },
+        HeavyBlock = { SoundId = "5763723309", PlaybackSpeed = 0.73 },
         ParryPressure = { SoundId = "" }, -- optional pressure accent on the attacker
         PostureBreak = { SoundId = "136159508882086", PlaybackSpeed = 0.75 }, -- provisional metallic accent
         UnarmedLight1 = { SoundId = "120430503624654" },
@@ -36,12 +41,12 @@ local Config = {
         Death = { SoundId = "" },
     },
     Attacks = {
-        Unarmed = { Light1 = "UnarmedLight1", Light2 = "UnarmedLight2", Light3 = "UnarmedLight3", DashLight = "UnarmedDashLight" },
-        Sword = { Light1 = "SwordLight1", Light2 = "SwordLight2", Light3 = "SwordLight3", DashLight = "SwordDashLight" },
+        Unarmed = { Light1 = "UnarmedLight1", Light2 = "UnarmedLight2", Light3 = "UnarmedLight3", Heavy = "UnarmedHeavy", DashLight = "UnarmedDashLight" },
+        Sword = { Light1 = "SwordLight1", Light2 = "SwordLight2", Light3 = "SwordLight3", Heavy = "SwordHeavy", DashLight = "SwordDashLight" },
     },
     Hits = {
-        Unarmed = { Light1 = "Hit1", Light2 = "Hit2", Light3 = "Hit3", DashLight = "DashHit" },
-        Sword = { Light1 = "Hit1", Light2 = "Hit2", Light3 = "Hit3", DashLight = "DashHit" },
+        Unarmed = { Light1 = "Hit1", Light2 = "Hit2", Light3 = "Hit3", Heavy = "HeavyImpact", DashLight = "DashHit" },
+        Sword = { Light1 = "Hit1", Light2 = "Hit2", Light3 = "Hit3", Heavy = "HeavyImpact", DashLight = "DashHit" },
     },
     States = { Blocking = "BlockStart", Dodging = "Dash", Stunned = "Stun", Ragdolled = "Ragdoll", Dead = "Death" },
 }

@@ -45,13 +45,18 @@ function Service:Init()
             local stun = CombatStateService:GetStunAnimationState(character)
             if stun and stun.Source == "PostureBreak" then return end
         end
+        if state == States.Attacking then
+            local _, moveId = CombatStateService:GetAttackIdentity(character)
+            if moveId == "Heavy" then Play(character, "HeavyWindup") end
+        end
         local dodge = state == States.Dodging and CombatStateService:GetDodgeAnimationState(character)
         Play(character, Config.States[state], dodge and { DashRequestId = dodge.RequestId, DodgeId = dodge.Id })
     end)
     CombatStateService:OnAttackPhaseChanged(function(character, phase, attackId)
         if phase ~= States.AttackPhases.Active or CombatStateService:GetAttackId(character) ~= attackId then return end
         local _, moveId = CombatStateService:GetAttackIdentity(character)
-        local weaponId = WeaponRegistry.ResolveFromCharacter(character)
+        local attack = CombatStateService:GetAttackAnimationState(character)
+        local weaponId = attack.WeaponId or WeaponRegistry.ResolveFromCharacter(character)
         local moves = Config.Attacks[weaponId]
         Play(character, moves and moves[moveId or "Light1"], { AttackId = attackId })
     end)
@@ -59,8 +64,8 @@ function Service:Init()
         if outcome.Result == States.DamageResults.Hit and outcome.Damage > 0 then
             local moves = impact and Config.Hits[impact.WeaponId]
             Play(character, moves and moves[impact.MoveId or "Light1"] or "Hit1")
-        elseif outcome.Result == States.DamageResults.Blocked then
-            Play(character, "BlockHit")
+        elseif outcome.Result == States.DamageResults.Blocked and not outcome.PostureBroken then
+            Play(character, impact and impact.MoveId == "Heavy" and "HeavyBlock" or "BlockHit")
         elseif outcome.Result == States.DamageResults.Parried then
             Play(character, "Parry")
         end

@@ -35,6 +35,15 @@ WeaponComboConfig.Weapons = {
         ResetAfter = 1.10,
 
         Moves = {
+            Heavy = {
+                Standalone = true, Cooldown = 0.9, MaxTargets = 1,
+                Startup = 0.32, Active = 0.12, RecoveryOnHit = 0.35, RecoveryOnMiss = 0.60,
+                DamageMultiplier = 1.45, PostureDamage = 26, HitStun = 0.38,
+                SuperArmor = { Start = 0.03, Finish = 0.09 },
+                Hitbox = { RangeMultiplier = 1, WidthMultiplier = 1 },
+                WalkSpeed = { Startup = 0.35, Active = 0.15, Recovery = 0.40 },
+                TurnScale = { Startup = 0.55, Active = 0.18, Recovery = 0.80 },
+            },
             DashLight = {
                 PostureDamage = 20,
                 Index = 1, AlternativeStart = true, Next = "Light2",
@@ -44,7 +53,7 @@ WeaponComboConfig.Weapons = {
                 ParryInterrupt = false,
             },
             Light1 = {
-                PostureDamage = 20,
+                PostureDamage = 7,
                 Index = 1,
                 Next = "Light2",
 
@@ -61,7 +70,7 @@ WeaponComboConfig.Weapons = {
             },
 
             Light2 = {
-                PostureDamage = 20,
+                PostureDamage = 9,
                 Index = 2,
                 Next = "Light3",
 
@@ -78,7 +87,7 @@ WeaponComboConfig.Weapons = {
             },
 
             Light3 = {
-                PostureDamage = 20,
+                PostureDamage = 13,
                 Index = 3,
                 Next = nil,
 
@@ -103,6 +112,15 @@ WeaponComboConfig.Weapons = {
         ResetAfter = 1.20,
 
         Moves = {
+            Heavy = {
+                Standalone = true, Cooldown = 1.25, MaxTargets = 3,
+                Startup = 0.46, Active = 0.16, RecoveryOnHit = 0.46, RecoveryOnMiss = 0.80,
+                DamageMultiplier = 1.70, PostureDamage = 36, HitStun = 0.45,
+                SuperArmor = { Start = 0.04, Finish = 0.12 },
+                Hitbox = { RangeMultiplier = 1.10, WidthMultiplier = 1.15 },
+                WalkSpeed = { Startup = 0.35, Active = 0.15, Recovery = 0.40 },
+                TurnScale = { Startup = 0.30, Active = 0, Recovery = 0.80 },
+            },
             DashLight = {
                 PostureDamage = 13,
                 Index = 1, AlternativeStart = true, Next = "Light2",
@@ -112,7 +130,7 @@ WeaponComboConfig.Weapons = {
                 ParryInterrupt = false,
             },
             Light1 = {
-                PostureDamage = 33,
+                PostureDamage = 9,
                 Index = 1,
                 Next = "Light2",
 
@@ -129,7 +147,7 @@ WeaponComboConfig.Weapons = {
             },
 
             Light2 = {
-                PostureDamage = 33,
+                PostureDamage = 11,
                 Index = 2,
                 Next = "Light3",
 
@@ -149,7 +167,7 @@ WeaponComboConfig.Weapons = {
             },
 
             Light3 = {
-                PostureDamage = 33,
+                PostureDamage = 16,
                 Index = 3,
                 Next = nil,
 
@@ -258,37 +276,62 @@ function WeaponComboConfig.Validate()
         local indexes = {}
 
         for moveId, move in pairs(weapon.Moves) do
-            assert(
-                type(move.Index) == "number"
-                    and move.Index >= 1
-                    and move.Index % 1 == 0,
-                string.format(
-                    "[WeaponComboConfig] %s.%s.Index must be a positive integer",
-                    weaponId,
-                    moveId
+            if move.Standalone then
+                assert(moveId ~= weapon.StartMove and not move.Index and not move.Next and not move.Finisher,
+                    "Standalone move cannot be a combo link")
+                assert(IsFiniteNumber(move.Cooldown) and move.Cooldown > 0
+                    and IsFiniteNumber(move.MaxTargets) and move.MaxTargets >= 1 and move.MaxTargets % 1 == 0,
+                    "Invalid standalone cooldown or target limit")
+                assert(IsFiniteNumber(move.RecoveryOnMiss) and IsFiniteNumber(move.RecoveryOnHit)
+                    and move.RecoveryOnMiss >= move.RecoveryOnHit, "Invalid whiff recovery")
+                local armor = move.SuperArmor
+                assert(IsFiniteNumber(armor.Start) and IsFiniteNumber(armor.Finish)
+                    and armor.Start >= 0 and armor.Start < armor.Finish and armor.Finish <= move.Active,
+                    "Invalid armor window")
+                for _, phase in ipairs({ "Startup", "Active", "Recovery" }) do
+                    for _, scale in ipairs({ move.WalkSpeed, move.TurnScale }) do
+                        assert(IsFiniteNumber(scale[phase]) and scale[phase] >= 0 and scale[phase] <= 1,
+                            "Invalid movement scale")
+                    end
+                end
+                assert(IsFiniteNumber(move.Hitbox.RangeMultiplier) and move.Hitbox.RangeMultiplier > 0
+                    and IsFiniteNumber(move.Hitbox.WidthMultiplier) and move.Hitbox.WidthMultiplier > 0
+                    and (move.Hitbox.HeightMultiplier == nil or IsFiniteNumber(move.Hitbox.HeightMultiplier)
+                        and move.Hitbox.HeightMultiplier > 0),
+                    "Invalid move hitbox")
+            else
+                assert(
+                    type(move.Index) == "number"
+                        and move.Index >= 1
+                        and move.Index % 1 == 0,
+                    string.format(
+                        "[WeaponComboConfig] %s.%s.Index must be a positive integer",
+                        weaponId,
+                        moveId
+                    )
                 )
-            )
 
-            if move.AlternativeStart then
-                assert(move.Index == 1 and moveId ~= weapon.StartMove and move.Next
-                    and weapon.Moves[move.Next] and weapon.Moves[move.Next].Index == 2,
-                    "Invalid alternate combo start: " .. weaponId .. "." .. moveId)
+                if move.AlternativeStart then
+                    assert(move.Index == 1 and moveId ~= weapon.StartMove and move.Next
+                        and weapon.Moves[move.Next] and weapon.Moves[move.Next].Index == 2,
+                        "Invalid alternate combo start: " .. weaponId .. "." .. moveId)
+                end
+                assert(
+                    move.AlternativeStart or not indexes[move.Index],
+                    string.format(
+                        "[WeaponComboConfig] %s has duplicate combo index %d",
+                        weaponId,
+                        move.Index
+                    )
+                )
+
+                if not move.AlternativeStart then indexes[move.Index] = true end
             end
-            assert(
-                move.AlternativeStart or not indexes[move.Index],
-                string.format(
-                    "[WeaponComboConfig] %s has duplicate combo index %d",
-                    weaponId,
-                    move.Index
-                )
-            )
-
-            if not move.AlternativeStart then indexes[move.Index] = true end
 
             if move.Next ~= nil then
                 assert(
                     type(move.Next) == "string"
-                        and weapon.Moves[move.Next] ~= nil,
+                        and weapon.Moves[move.Next] ~= nil and not weapon.Moves[move.Next].Standalone,
                     string.format(
                         "[WeaponComboConfig] %s.%s.Next references unknown move '%s'",
                         weaponId,

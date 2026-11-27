@@ -91,6 +91,13 @@ local function UpdateHighlight(character, entry, state, phase, now, deltaTime)
         baseColor = state == CombatStates.Attacking and Config.AttackPhases[phase] or Config.States[state]
     end
 
+    if state == CombatStates.UsingAbility then baseColor = character:GetAttribute(Attributes.CastColor) end
+    if state == CombatStates.Attacking and character:GetAttribute(Attributes.MoveId) == "Heavy" then
+        if phase == "Startup" then baseColor = Config.HeavyStartupColor end
+        local starts = character:GetAttribute(Attributes.ArmorStartsAt)
+        local ends = character:GetAttribute(Attributes.ArmorEndsAt)
+        if starts and ends and now >= starts and now < ends then baseColor = Config.ArmorColor end
+    end
     if dodgeGlow then baseColor = dodgeGlow.Color end
 
     local reaction = entry.Reaction
@@ -147,7 +154,7 @@ local function FindHandle(character, weaponId)
     end
 end
 
-local function CreateTrail(entry, handle, attackId)
+local function CreateTrail(entry, handle, attackId, isHeavy)
     if trailCount >= Config.MaxTrails then
         return
     end
@@ -178,11 +185,11 @@ local function CreateTrail(entry, handle, attackId)
     trail.Attachment1 = finish
     trail.Color = ColorSequence.new(Config.Trail.Color)
     trail.Transparency = NumberSequence.new({
-        NumberSequenceKeypoint.new(0, Config.Trail.Transparency),
+        NumberSequenceKeypoint.new(0, isHeavy and 0.65 or Config.Trail.Transparency),
         NumberSequenceKeypoint.new(1, 1),
     })
     trail.WidthScale = NumberSequence.new(Config.Trail.Width)
-    trail.Lifetime = Config.Trail.Lifetime
+    trail.Lifetime = isHeavy and 0.13 or Config.Trail.Lifetime
     trail.MinLength = 0.02
     trail.FaceCamera = true
     trail.LightEmission = 0.15
@@ -234,7 +241,7 @@ local function UpdateCharacter(character, entry, now, deltaTime)
         ClearTrail(entry)
     end
     if handle and not entry.TrailResources then
-        CreateTrail(entry, handle, attackId)
+        CreateTrail(entry, handle, attackId, character:GetAttribute(Attributes.MoveId) == "Heavy")
     end
 end
 
@@ -272,7 +279,7 @@ local function PlayReaction(payload)
     end
     local character = payload.Target
     local root = character:FindFirstChild("HumanoidRootPart")
-    local settings = Config.Reactions[payload.Result]
+    local settings = Config.Reactions[payload.Reaction or payload.Result]
     if not root or not settings or not IsNear(root.Position) then
         return
     end

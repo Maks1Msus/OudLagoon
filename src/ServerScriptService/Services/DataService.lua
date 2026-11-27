@@ -7,6 +7,7 @@ local GameConfig = require(
 )
 local ProgressionConfig = require(ReplicatedStorage.Shared.Config.ProgressionConfig)
 
+local AbilityConfig = require(ReplicatedStorage.Shared.Config.AbilityConfig)
 local DataService = {}
 
 local PlayerStore = DataStoreService:GetDataStore(
@@ -84,6 +85,7 @@ local function CreateDefaultData()
         Resources = DeepCopy(GameConfig.StartingResources),
 
         Abilities = {},
+        Loadout = { Abilities = DeepCopy(AbilityConfig.DefaultSlots), Bindings = DeepCopy(AbilityConfig.Bindings) },
 
         SpiritualProfile = {
             Directions = {},

@@ -544,6 +544,7 @@ local function GetMovementRestriction()
         return nil
     end
     local state = Humanoid:GetAttribute(MovementRestrictions.StateAttribute)
+    if state == "UsingAbility" then return MovementRestrictions.States.UsingAbility end
     if state ~= "Stunned" and state ~= "Ragdolled" and state ~= "Dead" and Humanoid:GetAttribute(DashConfig.DashAttackAttribute) then
         return MovementRestrictions.States.Attacking
     end
@@ -604,7 +605,8 @@ local function UpdateMovementSpeed()
     local restriction = GetMovementRestriction()
     local sprintMultiplier = IsSprinting and (not restriction or restriction.CanSprint)
         and Settings.SprintSpeedMultiplier or 1
-    local combatMultiplier = restriction and restriction.WalkSpeedMultiplier or 1
+    local combatMultiplier = Humanoid:GetAttribute(MovementRestrictions.SpeedScaleAttribute)
+        or restriction and restriction.WalkSpeedMultiplier or 1
     local base = Humanoid:GetAttribute(MovementRestrictions.BaseSpeedAttribute)
 
     if type(base) == "number" then
@@ -625,7 +627,7 @@ local function UpdateMovementSpeed()
     end
     ExpectedWalkSpeed = targetSpeed
 
-    if restriction and not restriction.CanJump then
+    if restriction and not restriction.CanJump and not Humanoid:GetAttribute("CastCanJump") then
         if SavedJumpEnabled == nil then
             SavedJumpEnabled = Humanoid:GetStateEnabled(Enum.HumanoidStateType.Jumping)
         end
@@ -656,7 +658,7 @@ local function UpdateCharacterRotation(
 	local targetDirection: Vector3? = nil
 	local responsiveness = Settings.WalkTurnResponsiveness
 
-	if CurrentShiftLock then
+	if CurrentShiftLock or Humanoid:GetAttribute(MovementRestrictions.StateAttribute) == "UsingAbility" then
 		local camera = workspace.CurrentCamera
 
 		if camera then
@@ -697,7 +699,8 @@ local function UpdateCharacterRotation(
 		RootPart.Position + targetDirection
 	)
 
-	local alpha = 1 - math.exp(-responsiveness * deltaTime)
+	local turnScale = Humanoid:GetAttribute(MovementRestrictions.TurnScaleAttribute) or 1
+	local alpha = 1 - math.exp(-responsiveness * turnScale * deltaTime)
 
 	RootPart.CFrame = RootPart.CFrame:Lerp(
 		targetCFrame,
@@ -779,6 +782,7 @@ local function UpdateCharacter(deltaTime: number)
     end
     local keepSprint = Humanoid:GetAttribute(DashConfig.PreserveSprintAttribute)
         and Humanoid:GetAttribute(DashConfig.PredictionAttribute)
+        and Humanoid:GetAttribute(MovementRestrictions.StateAttribute) ~= "UsingAbility"
         and Humanoid:GetAttribute(MovementRestrictions.StateAttribute) ~= "Attacking"
         and Humanoid:GetAttribute(MovementRestrictions.StateAttribute) ~= "Stunned"
         and Humanoid:GetAttribute(MovementRestrictions.StateAttribute) ~= "Dead"
@@ -818,7 +822,7 @@ local function UpdateCharacter(deltaTime: number)
 		UpdateLocomotion("Idle", Vector3.zero)
 
 		ScheduleIdleVariation()
-        if CurrentShiftLock then
+        if CurrentShiftLock or state == "UsingAbility" then
             UpdateCharacterRotation(moveDirection, deltaTime)
         end
 

@@ -1,7 +1,13 @@
 {
-  "ClassName": "ScreenGui",
-  "Properties": {
-    "DisplayOrder": 20,
-    "ResetOnSpawn": false
+  "className": "ScreenGui",
+  "properties": {
+    "DisplayOrder": 20.0,
+    "SerializedOverrides": {
+      "BinaryString": ""
+    },
+    "ResetOnSpawn": false,
+    "InputSinkEnabled": {
+      "Enum": 0
+    }
   }
 }

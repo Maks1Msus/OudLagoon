@@ -1,44 +1,100 @@
-
 {
   "name": "OudLagoon",
   "tree": {
     "$className": "DataModel",
-
     "ReplicatedStorage": {
       "$className": "ReplicatedStorage",
-
+      "Remotes": {
+        "$className": "Folder",
+        "$properties": {
+          "ExplorerIconContent": {
+            "Content": "None"
+          },
+          "SerializedOverrides": {
+            "BinaryString": ""
+          }
+        }
+      },
       "Shared": {
+        "$properties": {
+          "ExplorerIconContent": {
+            "Content": "None"
+          },
+          "SerializedOverrides": {
+            "BinaryString": ""
+          }
+        },
         "$path": "src/ReplicatedStorage/Shared"
       },
-
       "VFX": {
         "$className": "Folder",
+        "$properties": {
+          "ExplorerIconContent": {
+            "Content": "None"
+          },
+          "SerializedOverrides": {
+            "BinaryString": ""
+          }
+        },
         "$ignoreUnknownInstances": true
       },
-
-      "Remotes": {
-        "$className": "Folder"
+      "$properties": {
+        "SerializedOverrides": {
+          "BinaryString": ""
+        }
       }
     },
-
     "ServerScriptService": {
+      "$properties": {
+        "SerializedOverrides": {
+          "BinaryString": ""
+        }
+      },
       "$path": "src/ServerScriptService"
     },
-
     "ServerStorage": {
+      "$properties": {
+        "SerializedOverrides": {
+          "BinaryString": ""
+        }
+      },
+      "$attributes": {
+        "RedupeUndoWaypoint": 0.531053715214419
+      },
       "$path": "src/ServerStorage"
     },
-
+    "StarterGui": {
+      "$properties": {
+        "ScreenOrientation": "Sensor",
+        "SerializedOverrides": {
+          "BinaryString": ""
+        }
+      },
+      "$path": "src/StarterGui"
+    },
     "StarterPlayer": {
       "$className": "StarterPlayer",
-
       "StarterPlayerScripts": {
+        "$properties": {
+          "SerializedOverrides": {
+            "BinaryString": ""
+          }
+        },
         "$path": "src/StarterPlayer/StarterPlayerScripts"
+      },
+      "$properties": {
+        "AvatarJointUpgrade": "Enabled",
+        "CameraMaxZoomDistance": 128.0,
+        "CharacterBreakJointsOnDeath": false,
+        "CharacterUseJumpPower": false,
+        "GameSettingsAvatar": "R6",
+        "SerializedOverrides": {
+          "BinaryString": ""
+        },
+        "UseImprovedCharacterEvents": {
+          "Enum": 0
+        }
       }
-    },
-
-    "StarterGui": {
-      "$path": "src/StarterGui"
     }
   }
 }

@@ -4,7 +4,10 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local CombatStateService = require(script.Parent.CombatStateService)
 local Config = require(ReplicatedStorage.Shared.Config.CombatStateConfig).Movement
 
+local AbilityConfig = require(ReplicatedStorage.Shared.Config.AbilityConfig)
+local Moves = require(ReplicatedStorage.Shared.Config.WeaponComboConfig)
 local CombatMovementService = {}
+local savedAutoRotate = setmetatable({}, { __mode = "k" })
 local Records = setmetatable({}, { __mode = "k" })
 local initialized = false
 local Jumping = Enum.HumanoidStateType.Jumping
@@ -66,10 +69,29 @@ local function Apply(character, state)
         humanoid:SetAttribute(Config.BaseSpeedAttribute, baseSpeed)
     end
     local restriction = Config.States[state]
+    local attack = state == "Attacking" and CombatStateService:GetAttackAnimationState(character)
+    local move = attack and Moves.GetMove(attack.WeaponId, attack.MoveId)
+    local speedScale = move and move.WalkSpeed and move.WalkSpeed[attack.Phase] or nil
+    local turnScale = move and move.TurnScale and move.TurnScale[attack.Phase] or nil
+    local ability = state == "UsingAbility" and CombatStateService:GetAbility(character)
+    if ability then
+        speedScale = (ability.Cast.WalkSpeed or AbilityConfig.CastSpeed)[ability.Phase]
+        turnScale = ability.Cast.TurnScale or AbilityConfig.TurnScale
+    end
+    humanoid:SetAttribute("CastCanJump", ability and ability.Cast.CanJump == true or nil)
+    humanoid:SetAttribute(Config.SpeedScaleAttribute, speedScale)
+    humanoid:SetAttribute(Config.TurnScaleAttribute, turnScale)
+    if turnScale ~= nil and savedAutoRotate[humanoid] == nil then
+        savedAutoRotate[humanoid] = humanoid.AutoRotate
+        humanoid.AutoRotate = false
+    elseif turnScale == nil and savedAutoRotate[humanoid] ~= nil then
+        humanoid.AutoRotate = savedAutoRotate[humanoid]
+        savedAutoRotate[humanoid] = nil
+    end
     humanoid:SetAttribute(Config.StateAttribute, state)
-    humanoid.WalkSpeed = baseSpeed * (restriction and restriction.WalkSpeedMultiplier or 1)
+    humanoid.WalkSpeed = baseSpeed * (speedScale or restriction and restriction.WalkSpeedMultiplier or 1)
 
-    if restriction and not restriction.CanJump then
+    if restriction and not restriction.CanJump and not (ability and ability.Cast.CanJump) then
         RestrictJump(humanoid)
     else
         ClearRecord(humanoid, true)
@@ -102,6 +124,12 @@ function CombatMovementService:Init()
 
     CombatStateService:OnStateChanged(function(character, state)
         Apply(character, state)
+    end)
+    CombatStateService:OnAbilityPhaseChanged(function(character)
+        Apply(character, CombatStateService:GetState(character))
+    end)
+    CombatStateService:OnAttackPhaseChanged(function(character)
+        Apply(character, CombatStateService:GetState(character))
     end)
     for _, player in ipairs(Players:GetPlayers()) do
         if player.Character then

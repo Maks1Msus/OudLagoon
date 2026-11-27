@@ -38,6 +38,7 @@ local function BuildPublicProfile(player, profile)
         NextLevelExperience = nextLevelExperience, -- 0 на максимальном уровне
         StatPoints = profile.StatPoints,
         Stats = { Attributes = table.clone(profile.Stats.Attributes) },
+        Loadout = { Abilities = table.clone(profile.Loadout.Abilities), Bindings = table.clone(profile.Loadout.Bindings) },
         Proficiencies = table.clone(profile.Proficiencies),
         Magic = {
             ManaCapacity = profile.Magic.ManaCapacity,

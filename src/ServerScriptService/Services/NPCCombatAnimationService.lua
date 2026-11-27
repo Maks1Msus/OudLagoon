@@ -223,7 +223,7 @@ local function ApplyStunReaction(entry)
         local slot = CombatAnimationConfig.GetStunSlot(
             snapshot.Source, CombatConfig.UnarmedId, entry.LastHitSlot
         )
-        if snapshot.Source == "Hit" and slot then
+        if (snapshot.Source == "Hit" or snapshot.Source == "HeavyHit") and slot then
             entry.LastHitSlot = slot
         end
         if not slot then
@@ -245,7 +245,13 @@ local function OnStateChanged(character, newState, oldState)
         return
     end
 
-    if newState == CombatStates.Attacking then
+    if newState == CombatStates.UsingAbility then
+        local snapshot = CombatStateService:GetAbilityAnimation(character)
+        if snapshot then
+            PlaySlot(entry, snapshot.Slot)
+            if entry.ActiveTrack then AttackAnimationSync.Update(entry.ActiveTrack, snapshot) end
+        else StopActive(entry) end
+    elseif newState == CombatStates.Attacking then
         local attackId, moveId = CombatStateService:GetAttackIdentity(character)
         if attackId and entry.AnimatedAttackId ~= attackId then
             entry.AnimatedAttackId = attackId
@@ -296,7 +302,7 @@ local function OnDamageApplied(character, outcome)
         if state == CombatStates.Blocking then
             PlayReaction(entry, "Parry", backToBlock)
         end
-    elseif result == DamageResults.Blocked then
+    elseif result == DamageResults.Blocked and not outcome.PostureBroken then
         if state == CombatStates.Blocking then
             PlayReaction(entry, "BlockHit", backToBlock)
         end
@@ -407,6 +413,13 @@ function NPCCombatAnimationService:Init()
         local entry = Entries[character]
         if entry then
             ApplyStunReaction(entry)
+        end
+    end)
+    CombatStateService:OnAbilityPhaseChanged(function(character)
+        local entry = Entries[character]
+        local snapshot = CombatStateService:GetAbilityAnimation(character)
+        if snapshot and entry and entry.ActiveSlot == snapshot.Slot and entry.ActiveTrack then
+            AttackAnimationSync.Update(entry.ActiveTrack, snapshot)
         end
     end)
     CombatStateService:OnAttackPhaseChanged(function(character, _phase, attackId)

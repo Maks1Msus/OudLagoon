@@ -10,8 +10,12 @@ local CombatVFXConfig = {
 
     Attributes = {
         State = "CombatVFXState",
+        CastColor = "CombatCastColor",
         Phase = "CombatVFXPhase",
         AttackId = "CombatVFXAttackId",
+        MoveId = "CombatVFXMoveId",
+        ArmorStartsAt = "CombatArmorStartsAt",
+        ArmorEndsAt = "CombatArmorEndsAt",
         ActiveEndsAt = "CombatVFXActiveEndsAt",
         WeaponId = "CombatVFXWeaponId",
         DodgeIFrameEndsAt = "CombatVFXDodgeIFrameEndsAt",
@@ -19,6 +23,8 @@ local CombatVFXConfig = {
     },
 
     Reactions = {
+        HeavyImpact = { Color = Color3.fromRGB(243, 118, 71), Duration = 0.28, Priority = 2 },
+        HeavyBlock = { Color = Color3.fromRGB(240, 186, 110), Duration = 0.24, Priority = 2 },
         PostureBreak = { Color = Color3.fromRGB(225, 193, 255), Duration = 0.36, Priority = 4 },
         Hit = {
             Color = Color3.fromRGB(224, 104, 94),
@@ -47,6 +53,8 @@ local CombatVFXConfig = {
         FillTransparency = 0.94,
         OutlineTransparency = 0.35,
     },
+    HeavyStartupColor = Color3.fromRGB(239, 142, 80),
+    ArmorColor = Color3.fromRGB(249, 220, 138),
     AttackPhases = {
         Startup = Color3.fromRGB(207, 176, 113),
         Active = Color3.fromRGB(235, 214, 174),

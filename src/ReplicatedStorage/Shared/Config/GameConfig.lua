@@ -35,7 +35,8 @@ GameConfig.StartingStats = {
 }
 
 GameConfig.StartingProficiencies = { Sword = 0, Unarmed = 0, Magic = 0 }
-GameConfig.StartingMagic = { ManaCapacity = 100, Affinities = {} }
+local gate = require(script.Parent.MagicConfig).Gate
+GameConfig.StartingMagic = { ManaCapacity = 100, Affinities = {}, GateThroughput = gate.Throughput, GateStability = gate.Stability }
 
 GameConfig.StartingResources = {
     Gold = 0,
